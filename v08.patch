@@ -1,0 +1,344 @@
+diff -ruN a/android-app/app/build.gradle.kts b/android-app/app/build.gradle.kts
+--- a/android-app/app/build.gradle.kts	2026-08-14 04:59:39.030039796 +0000
++++ b/android-app/app/build.gradle.kts	2026-08-14 06:16:15.798599196 +0000
+@@ -10,8 +10,8 @@
+         applicationId = "com.onroonlink.app"
+         minSdk = 24
+         targetSdk = 36
+-        versionCode = 7
+-        versionName = "0.7"
++        versionCode = 8
++        versionName = "0.8"
+     }
+ 
+     compileOptions {
+diff -ruN a/android-app/app/src/main/java/com/onroonlink/app/MainActivity.java b/android-app/app/src/main/java/com/onroonlink/app/MainActivity.java
+--- a/android-app/app/src/main/java/com/onroonlink/app/MainActivity.java	2026-08-14 05:00:03.878874747 +0000
++++ b/android-app/app/src/main/java/com/onroonlink/app/MainActivity.java	2026-08-14 06:16:38.699351690 +0000
+@@ -123,7 +123,7 @@
+         root.addView(title);
+ 
+         TextView sub = new TextView(this);
+-        sub.setText("Roon 전용 연결 · v0.7\n8자리 코드만 입력하면 자동 매핑 또는 STUN 동시 펀칭으로 직접 연결을 시도합니다.");
++        sub.setText("Roon 전용 가상 LAN · v0.8\n고정 암호 한 번으로 연결하고, Roon의 multicast/broadcast 자동 발견까지 터널로 이어줍니다.");
+         sub.setTextSize(14);
+         sub.setPadding(0, dp(8), 0, dp(12));
+         root.addView(sub);
+@@ -163,22 +163,22 @@
+         root.addView(roleSpinner);
+ 
+         TextView codeLabel = new TextView(this);
+-        codeLabel.setText("PC의 8자리 코드");
++        codeLabel.setText("고정 연결 암호");
+         codeLabel.setTextSize(14);
+         codeLabel.setPadding(0, dp(12), 0, dp(4));
+         root.addView(codeLabel);
+ 
+         pairingCode = new EditText(this);
+-        pairingCode.setHint("ABCD-EFGH");
++        pairingCode.setHint("고정 암호를 입력하세요");
+         pairingCode.setSingleLine(true);
+         pairingCode.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
+-        pairingCode.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
++        pairingCode.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+         root.addView(pairingCode, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(58)));
+ 
+         LinearLayout pairButtons = new LinearLayout(this);
+         pairButtons.setOrientation(LinearLayout.HORIZONTAL);
+         Button pasteConnect = new Button(this);
+-        pasteConnect.setText("8자리 코드로 페어링");
++        pasteConnect.setText("고정 암호로 페어링");
+         pasteConnect.setOnClickListener(v -> shortCodePairAndConnect());
+         pairButtons.addView(pasteConnect, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+         Button qr = new Button(this);
+@@ -290,16 +290,17 @@
+         }
+         String code;
+         try {
+-            code = ShortPairClient.normalizeCode(raw);
++            code = ShortPairClient.normalizeSecret(raw);
+         } catch (Throwable e) {
+-            stickyStatus = "8자리 코드 오류: " + safeMessage(e);
++            stickyStatus = "연결 암호 오류: " + safeMessage(e);
+             status.setText(stickyStatus);
+             return;
+         }
+-        pairingCode.setText(code.substring(0, 4) + "-" + code.substring(4));
++        pairingCode.setText(code);
+         final SecureProfileStore.Role role = selectedRole();
++        try { store.savePairSecret(code); } catch (Throwable ignored) { }
+         pairingBusy = true;
+-        stickyStatus = "PC와 안전하게 페어링 중... (최대 60초)";
++        stickyStatus = "PC와 고정 암호로 안전하게 페어링 중... (최대 60초)";
+         status.setText(stickyStatus);
+         ShortPairClient.pair(code, role.name(), new ShortPairClient.Callback() {
+             @Override public void onStatus(String message) {
+@@ -318,7 +319,7 @@
+                             throw new IllegalArgumentException("PC의 외부 연결 설정이 아직 완료되지 않았습니다.");
+                         configText.setText(conf.trim());
+                         store.save(conf.trim(), role, autoReconnect.isChecked());
+-                        stickyStatus = "8자리 페어링 완료 · VPN 연결 준비";
++                        stickyStatus = "고정 암호 페어링 완료 · 가상 LAN 연결 준비";
+                         status.setText(stickyStatus);
+                         requestConnect();
+                     } catch (Throwable e) {
+@@ -391,6 +392,8 @@
+     private void loadSavedProfile() {
+         String raw = store.loadConfig();
+         if (!raw.isEmpty()) configText.setText(raw);
++        String savedSecret = store.loadPairSecret();
++        if (!savedSecret.isEmpty()) pairingCode.setText(savedSecret);
+         SecureProfileStore.Role role = store.loadRole();
+         roleSpinner.setSelection(role == SecureProfileStore.Role.PHONE ? 0 : 1);
+         autoReconnect.setChecked(store.isAutoReconnect());
+@@ -402,7 +405,7 @@
+ 
+     private boolean saveProfile(boolean showToast) {
+         String raw = configText.getText().toString().trim();
+-        if (raw.isEmpty()) { status.setText("먼저 PC 연결 코드를 가져와 주세요."); return false; }
++        if (raw.isEmpty()) { status.setText("먼저 PC 연결 정보를 가져와 주세요."); return false; }
+         try {
+             store.save(raw, selectedRole(), autoReconnect.isChecked());
+             if (showToast) toast("설정을 암호화해서 저장했습니다.");
+diff -ruN a/android-app/app/src/main/java/com/onroonlink/app/SecureProfileStore.java b/android-app/app/src/main/java/com/onroonlink/app/SecureProfileStore.java
+--- a/android-app/app/src/main/java/com/onroonlink/app/SecureProfileStore.java	2026-08-14 01:33:02.000000000 +0000
++++ b/android-app/app/src/main/java/com/onroonlink/app/SecureProfileStore.java	2026-08-14 06:16:15.799127001 +0000
+@@ -21,6 +21,7 @@
+     private static final String K_CONFIG = "config_enc";
+     private static final String K_ROLE = "role";
+     private static final String K_AUTO = "auto_reconnect";
++    private static final String K_SECRET = "pair_secret_enc";
+ 
+     enum Role {
+         PHONE("스마트폰 · Roon Remote"),
+@@ -55,6 +56,17 @@
+         }
+     }
+ 
++
++    void savePairSecret(String secret) throws Exception {
++        prefs.edit().putString(K_SECRET, encrypt(secret == null ? "" : secret.trim())).apply();
++    }
++
++    String loadPairSecret() {
++        String enc = prefs.getString(K_SECRET, "");
++        if (enc == null || enc.isEmpty()) return "";
++        try { return decrypt(enc); } catch (Exception ignored) { return ""; }
++    }
++
+     Role loadRole() {
+         String raw = prefs.getString(K_ROLE, Role.PHONE.name());
+         try { return Role.valueOf(raw); }
+diff -ruN a/android-app/app/src/main/java/com/onroonlink/app/ShortPairClient.java b/android-app/app/src/main/java/com/onroonlink/app/ShortPairClient.java
+--- a/android-app/app/src/main/java/com/onroonlink/app/ShortPairClient.java	2026-08-14 04:59:38.427972260 +0000
++++ b/android-app/app/src/main/java/com/onroonlink/app/ShortPairClient.java	2026-08-14 06:16:38.699526660 +0000
+@@ -31,7 +31,6 @@
+ 
+ final class ShortPairClient {
+     private static final String RELAY_BASE = "https://ntfy.sh/";
+-    private static final String ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+     private static final ExecutorService WORKER = Executors.newCachedThreadPool();
+ 
+     interface Callback {
+@@ -40,29 +39,23 @@
+         void onError(String message);
+     }
+ 
+-    static String normalizeCode(String raw) {
+-        String c = raw == null ? "" : raw.toUpperCase(Locale.US)
+-                .replace("-", "").replace(" ", "")
+-                .replace("\t", "").replace("\r", "").replace("\n", "").trim();
+-        if (c.length() != 8) throw new IllegalArgumentException("PC의 8자리 코드를 입력해 주세요.");
+-        for (int i = 0; i < c.length(); i++) {
+-            if (ALPHABET.indexOf(c.charAt(i)) < 0)
+-                throw new IllegalArgumentException("코드에 사용할 수 없는 문자가 있습니다.");
+-        }
+-        return c;
++    static String normalizeSecret(String raw) {
++        String secret = raw == null ? "" : raw.trim();
++        if (secret.length() < 10) throw new IllegalArgumentException("고정 연결 암호를 정확히 입력해 주세요.");
++        return secret;
+     }
+ 
+-    static void pair(String code, String role, Callback cb) {
++    static void pair(String secret, String role, Callback cb) {
+         WORKER.execute(() -> {
+             try {
+-                String c = normalizeCode(code);
++                String c = normalizeSecret(secret);
+                 String r = "DAP".equalsIgnoreCase(role) ? "DAP" : "PHONE";
+                 cb.onStatus("PC 페어링 채널 준비 중...");
+ 
+                 byte[] pairKey = derivePairKey(c);
+                 byte[] topicBytes = hmac(pairKey, "TOPIC".getBytes(StandardCharsets.UTF_8));
+                 byte[] authKey = hmac(pairKey, "AUTH".getBytes(StandardCharsets.UTF_8));
+-                String topic = "onrl7-" + hex(topicBytes, 10);
++                String topic = "onrl8-" + hex(topicBytes, 10);
+ 
+                 KeyPairGenerator kpg = KeyPairGenerator.getInstance("EC");
+                 kpg.initialize(new ECGenParameterSpec("secp256r1"));
+@@ -83,9 +76,9 @@
+                 }
+                 String canonical = "REQ|" + r + "|" + nonce + "|" + pub + "|" + candidate;
+                 String mac = b64(hmac(authKey, canonical.getBytes(StandardCharsets.UTF_8)));
+-                String request = "ONRL7REQ|" + r + "|" + nonce + "|" + pub + "|" + candidate + "|" + mac;
++                String request = "ONRL8REQ|" + r + "|" + nonce + "|" + pub + "|" + candidate + "|" + mac;
+ 
+-                cb.onStatus("PC에 8자리 코드와 네트워크 후보 보내는 중...");
++                cb.onStatus("PC에 고정 암호 인증과 네트워크 후보 보내는 중...");
+                 publish(topic, request);
+                 cb.onStatus("PC 응답 대기 중... (최대 60초)");
+ 
+@@ -99,52 +92,100 @@
+     }
+ 
+     private static String waitForResponse(String topic, String nonce, KeyPair kp, byte[] pairKey, byte[] authKey) throws Exception {
++        // Android/carrier combinations can buffer a never-ending HTTP stream.  Use ntfy's
++        // one-shot cached polling mode instead: every request completes, so a proxy cannot
++        // hold the response line forever.  The topic is derived from the fixed secret and the
++        // matching nonce below prevents an old response from being accepted.
+         long deadline = System.currentTimeMillis() + 60_000L;
+-        URL u = new URL(RELAY_BASE + topic + "/json?since=10m");
+-        HttpURLConnection c = (HttpURLConnection) u.openConnection();
+-        c.setRequestMethod("GET");
+-        c.setConnectTimeout(10_000);
+-        c.setReadTimeout(65_000);
+-        c.setUseCaches(false);
+-        try (InputStream in = c.getInputStream(); BufferedReader br = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8))) {
+-            String line;
+-            while (System.currentTimeMillis() < deadline && (line = br.readLine()) != null) {
+-                JSONObject j;
+-                try { j = new JSONObject(line); }
+-                catch (Throwable ignored) { continue; }
+-                if (!"message".equals(j.optString("event"))) continue;
+-                String msg = j.optString("message", "");
+-                if (!msg.startsWith("ONRL7RES|")) continue;
+-                String[] p = msg.split("\\|", -1);
+-                if (p.length != 6 || !nonce.equals(p[1])) continue;
+-                String canonical = "RES|" + p[1] + "|" + p[2] + "|" + p[3] + "|" + p[4];
+-                if (!constantEquals(hmac(authKey, canonical.getBytes(StandardCharsets.UTF_8)), b64decode(p[5])))
+-                    continue;
+-
+-                byte[] serverDer = b64decode(p[2]);
+-                byte[] iv = b64decode(p[3]);
+-                byte[] cipherText = b64decode(p[4]);
+-                KeyFactory kf = KeyFactory.getInstance("EC");
+-                PublicKey serverPub = kf.generatePublic(new X509EncodedKeySpec(serverDer));
+-                KeyAgreement ka = KeyAgreement.getInstance("ECDH");
+-                ka.init(kp.getPrivate());
+-                ka.doPhase(serverPub, true);
+-                byte[] shared = ka.generateSecret();
+-                byte[] sessionKey = deriveSessionKey(pairKey, nonce, shared);
+-
+-                Cipher aes = Cipher.getInstance("AES/GCM/NoPadding");
+-                aes.init(Cipher.DECRYPT_MODE, new SecretKeySpec(sessionKey, "AES"), new GCMParameterSpec(128, iv));
+-                aes.updateAAD(nonce.getBytes(StandardCharsets.UTF_8));
+-                byte[] plain = aes.doFinal(cipherText);
+-                String conf = new String(plain, StandardCharsets.UTF_8).trim();
+-                if (!conf.contains("[Interface]") || !conf.contains("[Peer]"))
+-                    throw new IllegalArgumentException("PC 응답이 올바른 RoonLink 설정이 아닙니다.");
+-                return conf;
++        int pollCount = 0;
++        Throwable lastNetworkError = null;
++        while (System.currentTimeMillis() < deadline) {
++            HttpURLConnection c = null;
++            try {
++                URL u = new URL(RELAY_BASE + topic + "/json?poll=1&since=10m");
++                c = (HttpURLConnection) u.openConnection();
++                c.setRequestMethod("GET");
++                c.setConnectTimeout(8_000);
++                c.setReadTimeout(8_000);
++                c.setUseCaches(false);
++                c.setRequestProperty("Accept", "application/x-ndjson");
++                c.setRequestProperty("Cache-Control", "no-cache");
++                c.setRequestProperty("Connection", "close");
++
++                int status = c.getResponseCode();
++                if (status / 100 != 2) {
++                    throw new IllegalStateException("페어링 응답 조회 HTTP " + status);
++                }
++
++                try (InputStream in = c.getInputStream();
++                     BufferedReader br = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8))) {
++                    String line;
++                    while ((line = br.readLine()) != null) {
++                        JSONObject j;
++                        try { j = new JSONObject(line); }
++                        catch (Throwable ignored) { continue; }
++                        if (!"message".equals(j.optString("event"))) continue;
++                        String msg = j.optString("message", "");
++                        if (!msg.startsWith("ONRL8RES|")) continue;
++                        String[] p = msg.split("\\|", -1);
++                        if (p.length != 6 || !nonce.equals(p[1])) continue;
++
++                        String canonical = "RES|" + p[1] + "|" + p[2] + "|" + p[3] + "|" + p[4];
++                        byte[] receivedMac;
++                        try { receivedMac = b64decode(p[5]); }
++                        catch (Throwable e) { throw new IllegalStateException("PC 응답 인증값 해석 실패", e); }
++                        if (!constantEquals(hmac(authKey, canonical.getBytes(StandardCharsets.UTF_8)), receivedMac))
++                            throw new IllegalStateException("PC 응답 인증 실패");
++
++                        byte[] serverDer = b64decode(p[2]);
++                        byte[] iv = b64decode(p[3]);
++                        byte[] cipherText = b64decode(p[4]);
++                        KeyFactory kf = KeyFactory.getInstance("EC");
++                        PublicKey serverPub = kf.generatePublic(new X509EncodedKeySpec(serverDer));
++                        KeyAgreement ka = KeyAgreement.getInstance("ECDH");
++                        ka.init(kp.getPrivate());
++                        ka.doPhase(serverPub, true);
++                        byte[] shared = ka.generateSecret();
++                        byte[] sessionKey = deriveSessionKey(pairKey, nonce, shared);
++
++                        Cipher aes = Cipher.getInstance("AES/GCM/NoPadding");
++                        aes.init(Cipher.DECRYPT_MODE, new SecretKeySpec(sessionKey, "AES"), new GCMParameterSpec(128, iv));
++                        aes.updateAAD(nonce.getBytes(StandardCharsets.UTF_8));
++                        byte[] plain = aes.doFinal(cipherText);
++                        String conf = new String(plain, StandardCharsets.UTF_8).trim();
++                        if (!conf.contains("[Interface]") || !conf.contains("[Peer]"))
++                            throw new IllegalArgumentException("PC 응답이 올바른 RoonLink 설정이 아닙니다.");
++                        return conf;
++                    }
++                }
++                lastNetworkError = null;
++            } catch (Throwable t) {
++                // A temporary LTE/Wi-Fi transition should not destroy an otherwise valid
++                // pairing.  Retry transport errors until the 60-second deadline, but surface
++                // cryptographic/protocol errors immediately because retrying cannot fix them.
++                String m = t.getMessage() == null ? "" : t.getMessage();
++                if (m.contains("인증") || m.contains("올바른 RoonLink")) {
++                    if (t instanceof Exception) throw (Exception)t;
++                    throw new Exception(t);
++                }
++                lastNetworkError = t;
++            } finally {
++                if (c != null) c.disconnect();
+             }
+-        } finally {
+-            c.disconnect();
++
++            pollCount++;
++            try { Thread.sleep(pollCount < 4 ? 350L : 700L); }
++            catch (InterruptedException e) {
++                Thread.currentThread().interrupt();
++                throw new IllegalStateException("페어링이 중단되었습니다.");
++            }
++        }
++        if (lastNetworkError != null) {
++            String m = lastNetworkError.getMessage();
++            if (m != null && !m.trim().isEmpty())
++                throw new IllegalStateException("PC 응답 조회 실패: " + m);
+         }
+-        throw new IllegalStateException("PC 응답 시간이 초과되었습니다. PC의 ON RoonLink Host가 실행 중인지 확인해 주세요.");
++        throw new IllegalStateException("PC는 요청을 받았지만 응답을 폰에서 가져오지 못했습니다. 다시 암호 페어링을 눌러 주세요.");
+     }
+ 
+     private static void publish(String topic, String message) throws Exception {
+@@ -166,7 +207,7 @@
+     }
+ 
+     private static byte[] derivePairKey(String code) throws Exception {
+-        return pbkdf2(code.getBytes(StandardCharsets.UTF_8), "ONRL7-PAIRING-V1".getBytes(StandardCharsets.UTF_8), 12000, 32);
++        return pbkdf2(code.getBytes(StandardCharsets.UTF_8), "ONRL8-PAIRING-V1".getBytes(StandardCharsets.UTF_8), 120000, 32);
+     }
+ 
+     private static byte[] deriveSessionKey(byte[] pairKey, String nonce, byte[] shared) throws Exception {
