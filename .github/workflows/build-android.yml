@@ -10,6 +10,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Reconstruct v0.6 source
+        run: |
+          cat .buildsrc/v06.part* | base64 -d > /tmp/v06.zip
+          unzip -t /tmp/v06.zip
+          unzip -q -o /tmp/v06.zip
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
@@ -23,8 +28,6 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.13'
-      - name: Unpack v0.6 source
-        run: unzip -q -o on-roonlink-android-v0.6-source.zip
       - name: Build v0.6 debug APK
         working-directory: android-app
         run: gradle --no-daemon :app:assembleDebug
