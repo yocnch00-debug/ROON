@@ -1,9 +1,6 @@
 package com.onroonlink.app;
 
 import android.app.Activity;
-import android.content.ClipData;
-import android.content.ClipboardManager;
-import android.content.Context;
 import android.content.Intent;
 import android.net.VpnService;
 import android.os.Bundle;
@@ -11,7 +8,6 @@ import android.os.Handler;
 import android.os.Looper;
 import android.provider.Settings;
 import android.text.InputType;
-import android.util.Base64;
 import android.view.Gravity;
 import android.view.View;
 import android.widget.ArrayAdapter;
@@ -24,323 +20,316 @@ import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
 
-import com.google.zxing.integration.android.IntentIntegrator;
-import com.google.zxing.integration.android.IntentResult;
 import com.wireguard.android.backend.Statistics;
 import com.wireguard.android.backend.Tunnel;
-import com.wireguard.crypto.Key;
 
-import java.nio.charset.StandardCharsets;
 import java.util.Locale;
 
 public class MainActivity extends Activity {
     private static final int REQ_VPN = 1001;
 
-    private Spinner roleSpinner;
-    private EditText configText;
-    private Switch autoReconnect;
-    private TextView status;
-    private TextView alwaysOnStatus;
-    private TextView linkStats;
-    private String pendingRaw;
-
     private RoonLinkApp app;
     private SecureProfileStore store;
-    private final Handler uiHandler = new Handler(Looper.getMainLooper());
-    private final Runnable statsTicker = new Runnable() {
+    private Switch mainSwitch;
+    private TextView networkState;
+    private TextView footerState;
+    private boolean suppressSwitch;
+    private boolean pendingEnableAfterPermission;
+
+    private final Handler ui = new Handler(Looper.getMainLooper());
+    private final Runnable ticker = new Runnable() {
         @Override public void run() {
-            refreshStatus();
-            uiHandler.postDelayed(this, 2000);
+            refreshMainState();
+            ui.postDelayed(this, 1500L);
         }
     };
 
-    @Override
-    protected void onCreate(Bundle savedInstanceState) {
+    @Override protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        app = RoonLinkApp.get();
+        app = (RoonLinkApp) getApplication();
         store = app.store();
-        setContentView(buildUi());
-        loadSavedProfile();
-        refreshStatus();
+        showMain();
     }
 
     @Override protected void onResume() {
         super.onResume();
-        uiHandler.removeCallbacks(statsTicker);
-        uiHandler.post(statsTicker);
+        ui.removeCallbacks(ticker);
+        ui.post(ticker);
     }
 
     @Override protected void onPause() {
         super.onPause();
-        uiHandler.removeCallbacks(statsTicker);
+        ui.removeCallbacks(ticker);
     }
 
-    private View buildUi() {
-        int pad = dp(18);
+    @Override public void onBackPressed() {
+        showMain();
+    }
+
+    private void showMain() {
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(pad, pad, pad, pad);
+        root.setPadding(dp(16), dp(12), dp(16), dp(16));
 
+        LinearLayout top = new LinearLayout(this);
+        top.setGravity(Gravity.CENTER_VERTICAL);
         TextView title = new TextView(this);
         title.setText("ON RoonLink");
-        title.setTextSize(28);
-        root.addView(title);
+        title.setTextSize(25);
+        top.addView(title, new LinearLayout.LayoutParams(0, dp(56), 1f));
+        Button settings = new Button(this);
+        settings.setText("설정");
+        settings.setOnClickListener(v -> showSettings());
+        top.addView(settings, new LinearLayout.LayoutParams(dp(105), dp(52)));
+        root.addView(top);
 
-        TextView sub = new TextView(this);
-        sub.setText("개인용 Roon 가상 LAN · v0.4\nQR 한 번으로 페어링하고, 폰/R8 II는 백그라운드에서 연결을 유지합니다.");
-        sub.setTextSize(14);
-        sub.setPadding(0, dp(8), 0, dp(14));
-        root.addView(sub);
+        TextView version = new TextView(this);
+        version.setText("Roon 가상 LAN · v0.8.3");
+        version.setTextSize(13);
+        version.setPadding(0, 0, 0, dp(18));
+        root.addView(version);
 
-        Button qr = new Button(this);
-        qr.setText("QR로 페어링");
-        qr.setOnClickListener(v -> scanPairingQr());
-        root.addView(qr);
+        LinearLayout row = new LinearLayout(this);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(4), dp(12), dp(4), dp(12));
 
-        Button paste = new Button(this);
-        paste.setText("페어링 코드를 클립보드에서 가져오기");
-        paste.setOnClickListener(v -> importFromClipboard());
-        root.addView(paste);
+        LinearLayout labels = new LinearLayout(this);
+        labels.setOrientation(LinearLayout.VERTICAL);
+        TextView name = new TextView(this);
+        name.setText("Roon Home");
+        name.setTextSize(20);
+        labels.addView(name);
+        networkState = new TextView(this);
+        networkState.setTextSize(14);
+        networkState.setPadding(0, dp(3), 0, 0);
+        labels.addView(networkState);
+        row.addView(labels, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
 
-        TextView roleLabel = new TextView(this);
-        roleLabel.setText("이 기기의 역할");
-        roleLabel.setTextSize(14);
-        roleLabel.setPadding(0, dp(12), 0, 0);
-        root.addView(roleLabel);
+        mainSwitch = new Switch(this);
+        mainSwitch.setShowText(false);
+        mainSwitch.setOnCheckedChangeListener((buttonView, isChecked) -> {
+            if (suppressSwitch) return;
+            if (isChecked) enableFromUser();
+            else disableFromUser();
+        });
+        row.addView(mainSwitch, new LinearLayout.LayoutParams(dp(74), dp(56)));
+        root.addView(row);
 
-        roleSpinner = new Spinner(this);
-        String[] labels = { SecureProfileStore.Role.PHONE.label, SecureProfileStore.Role.DAP.label };
-        ArrayAdapter<String> adapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, labels);
-        roleSpinner.setAdapter(adapter);
-        root.addView(roleSpinner);
+        View divider = new View(this);
+        divider.setBackgroundColor(0x22000000);
+        root.addView(divider, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(1)));
 
-        linkStats = new TextView(this);
-        linkStats.setTextSize(15);
-        linkStats.setPadding(0, dp(12), 0, dp(6));
-        root.addView(linkStats);
+        footerState = new TextView(this);
+        footerState.setTextSize(14);
+        footerState.setPadding(0, dp(16), 0, 0);
+        root.addView(footerState);
 
-        autoReconnect = new Switch(this);
-        autoReconnect.setText("백그라운드 자동 복구");
-        autoReconnect.setChecked(true);
-        root.addView(autoReconnect);
+        TextView hint = new TextView(this);
+        hint.setText("한 번 설정한 뒤에는 이 스위치만 켜두면 됩니다. 네트워크가 바뀌거나 연결이 끊겨도 자동 복구를 시도합니다.");
+        hint.setTextSize(13);
+        hint.setPadding(0, dp(8), 0, 0);
+        root.addView(hint);
 
-        TextView keepNote = new TextView(this);
-        keepNote.setText("권장: Android의 'Always-on VPN'에서 ON RoonLink를 항상 켜짐으로 지정하세요.\n" +
-                "'VPN 없이 연결 차단'은 OFF로 둡니다. 일반 인터넷은 기존 Wi-Fi/LTE/5G를 그대로 씁니다.");
-        keepNote.setTextSize(13);
-        keepNote.setPadding(0, dp(6), 0, dp(8));
-        root.addView(keepNote);
+        setContentView(root);
+        refreshMainState();
+    }
 
-        LinearLayout buttons = new LinearLayout(this);
-        buttons.setOrientation(LinearLayout.HORIZONTAL);
-        Button on = new Button(this);
-        on.setText("연결");
-        on.setOnClickListener(v -> requestConnect());
-        buttons.addView(on, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-        Button off = new Button(this);
-        off.setText("끊기");
-        off.setOnClickListener(v -> disconnect());
-        buttons.addView(off, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-        root.addView(buttons);
-
-        Button alwaysOn = new Button(this);
-        alwaysOn.setText("Always-on 연결 설정 열기");
-        alwaysOn.setOnClickListener(v -> openVpnSettings());
-        root.addView(alwaysOn);
-
-        Button battery = new Button(this);
-        battery.setText("앱 배터리 설정 열기");
-        battery.setOnClickListener(v -> openBatterySettings());
-        root.addView(battery);
-
-        alwaysOnStatus = new TextView(this);
-        alwaysOnStatus.setPadding(0, dp(8), 0, 0);
-        root.addView(alwaysOnStatus);
-
-        status = new TextView(this);
-        status.setTextSize(15);
-        status.setPadding(0, dp(6), 0, dp(12));
-        root.addView(status);
-
-        TextView advanced = new TextView(this);
-        advanced.setText("고급 · 수동 설정");
-        advanced.setTextSize(13);
-        advanced.setPadding(0, dp(12), 0, dp(4));
-        root.addView(advanced);
-
-        configText = new EditText(this);
-        configText.setHint("QR 페어링을 쓰면 자동으로 채워집니다.\n[Interface] ...\n[Peer] ...");
-        configText.setMinLines(8);
-        configText.setGravity(Gravity.TOP | Gravity.START);
-        configText.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
-        root.addView(configText, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(210)));
-
-        Button save = new Button(this);
-        save.setText("수동 설정 저장");
-        save.setOnClickListener(v -> saveProfile(true));
-        root.addView(save);
-
+    private void showSettings() {
         ScrollView scroll = new ScrollView(this);
-        scroll.addView(root);
-        return scroll;
-    }
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setPadding(dp(18), dp(14), dp(18), dp(24));
 
-    private void scanPairingQr() {
-        IntentIntegrator integrator = new IntentIntegrator(this);
-        integrator.setDesiredBarcodeFormats(IntentIntegrator.QR_CODE);
-        integrator.setPrompt("PC의 ON RoonLink 페어링 QR을 비춰 주세요");
-        integrator.setBeepEnabled(false);
-        integrator.setOrientationLocked(false);
-        integrator.initiateScan();
-    }
+        LinearLayout top = new LinearLayout(this);
+        top.setGravity(Gravity.CENTER_VERTICAL);
+        TextView title = new TextView(this);
+        title.setText("ON RoonLink 설정");
+        title.setTextSize(24);
+        top.addView(title, new LinearLayout.LayoutParams(0, dp(56), 1f));
+        Button done = new Button(this);
+        done.setText("완료");
+        top.addView(done, new LinearLayout.LayoutParams(dp(95), dp(52)));
+        root.addView(top);
 
-    private void importFromClipboard() {
-        ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
-        if (cm == null || !cm.hasPrimaryClip()) { toast("클립보드가 비어 있습니다."); return; }
-        ClipData clip = cm.getPrimaryClip();
-        if (clip == null || clip.getItemCount() == 0) { toast("클립보드가 비어 있습니다."); return; }
-        CharSequence s = clip.getItemAt(0).coerceToText(this);
-        importPairingPayload(s == null ? "" : s.toString());
-    }
+        root.addView(label("이 기기의 역할"));
+        Spinner role = new Spinner(this);
+        String[] roles = { SecureProfileStore.Role.PHONE.label, SecureProfileStore.Role.DAP.label };
+        role.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, roles));
+        role.setSelection(store.loadRole() == SecureProfileStore.Role.PHONE ? 0 : 1);
+        root.addView(role, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(56)));
 
-    private void importPairingPayload(String raw) {
-        raw = raw == null ? "" : raw.trim();
-        try {
-            SecureProfileStore.Role role = selectedRole();
-            String conf = raw;
-            if (raw.startsWith("ONRL1|")) {
-                String[] parts = raw.split("\\|", 3);
-                if (parts.length != 3) throw new IllegalArgumentException("페어링 코드 형식이 올바르지 않습니다.");
-                if ("PHONE".equalsIgnoreCase(parts[1])) role = SecureProfileStore.Role.PHONE;
-                else if ("DAP".equalsIgnoreCase(parts[1])) role = SecureProfileStore.Role.DAP;
-                else throw new IllegalArgumentException("알 수 없는 기기 역할입니다.");
-                conf = decodeUrlBase64(parts[2]);
+        root.addView(label("고정 연결 암호"));
+        EditText secret = new EditText(this);
+        secret.setSingleLine(true);
+        secret.setHint("PC와 같은 고정 암호");
+        secret.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        secret.setText(store.loadPairSecret());
+        root.addView(secret, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(58)));
+
+        Switch auto = new Switch(this);
+        auto.setText("연결 끊김 / 네트워크 변경 시 자동 복구");
+        auto.setChecked(store.isAutoReconnect());
+        auto.setPadding(0, dp(12), 0, dp(8));
+        root.addView(auto);
+
+        TextView vpn = new TextView(this);
+        vpn.setTextSize(14);
+        vpn.setPadding(0, dp(12), 0, dp(8));
+        root.addView(vpn);
+        updateAlwaysOnText(vpn);
+
+        Button vpnSettings = new Button(this);
+        vpnSettings.setText("Android 항상 연결 VPN 설정");
+        vpnSettings.setOnClickListener(v -> openVpnSettings());
+        root.addView(vpnSettings);
+
+        TextView note = new TextView(this);
+        note.setText("재부팅 후까지 Android가 VPN을 확실히 다시 올리게 하려면 여기서 ON RoonLink를 '항상 연결 VPN'으로 한 번 지정해두면 됩니다. 'VPN 없이 연결 차단'은 OFF 권장.");
+        note.setTextSize(13);
+        note.setPadding(0, dp(8), 0, dp(18));
+        root.addView(note);
+
+        Button clear = new Button(this);
+        clear.setText("저장된 터널 정보 다시 만들기");
+        clear.setOnClickListener(v -> {
+            store.clearConfig();
+            toast("다음 ON에서 PC와 새로 페어링합니다.");
+        });
+        root.addView(clear);
+
+        done.setOnClickListener(v -> {
+            try {
+                String rawSecret = ShortPairClient.normalizeSecret(secret.getText().toString());
+                SecureProfileStore.Role newRole = role.getSelectedItemPosition() == 0
+                        ? SecureProfileStore.Role.PHONE : SecureProfileStore.Role.DAP;
+                String oldSecret = store.loadPairSecret();
+                SecureProfileStore.Role oldRole = store.loadRole();
+                boolean changed = !rawSecret.equals(oldSecret) || newRole != oldRole;
+                store.saveSettings(newRole, rawSecret, auto.isChecked());
+                if (changed) store.clearConfig();
+                if (store.isDesiredEnabled()) {
+                    app.requestFreshProfile(true);
+                    app.recoverDesiredConnection("settings");
+                }
+                showMain();
+            } catch (Throwable t) {
+                toast(t.getMessage() == null ? "설정을 확인해 주세요." : t.getMessage());
             }
-            if (!conf.contains("[Interface]") || !conf.contains("[Peer]"))
-                throw new IllegalArgumentException("ON RoonLink 설정이 아닙니다.");
+        });
 
-            roleSpinner.setSelection(role == SecureProfileStore.Role.PHONE ? 0 : 1);
-            configText.setText(conf.trim());
-            store.save(conf.trim(), role, autoReconnect.isChecked());
-            toast(role == SecureProfileStore.Role.PHONE ? "스마트폰 페어링 완료" : "HiBy DAP 페어링 완료");
-            requestConnect();
-        } catch (Exception e) {
-            status.setText("페어링 실패: " + e.getMessage());
-        }
+        scroll.addView(root);
+        setContentView(scroll);
     }
 
-    private static String decodeUrlBase64(String in) {
-        String s = in.trim();
-        int rem = s.length() % 4;
-        if (rem != 0) s += "====".substring(rem);
-        byte[] b = Base64.decode(s, Base64.URL_SAFE | Base64.NO_WRAP);
-        return new String(b, StandardCharsets.UTF_8);
+    private TextView label(String text) {
+        TextView v = new TextView(this);
+        v.setText(text);
+        v.setTextSize(14);
+        v.setPadding(0, dp(14), 0, dp(5));
+        return v;
     }
 
-    private void loadSavedProfile() {
-        String raw = store.loadConfig();
-        if (!raw.isEmpty()) configText.setText(raw);
-        SecureProfileStore.Role role = store.loadRole();
-        roleSpinner.setSelection(role == SecureProfileStore.Role.PHONE ? 0 : 1);
-        autoReconnect.setChecked(store.isAutoReconnect());
-    }
-
-    private SecureProfileStore.Role selectedRole() {
-        return roleSpinner.getSelectedItemPosition() == 0 ? SecureProfileStore.Role.PHONE : SecureProfileStore.Role.DAP;
-    }
-
-    private boolean saveProfile(boolean showToast) {
-        String raw = configText.getText().toString().trim();
-        if (raw.isEmpty()) { status.setText("설정 내용이 없습니다. QR로 페어링해 주세요."); return false; }
-        try {
-            store.save(raw, selectedRole(), autoReconnect.isChecked());
-            if (showToast) toast("설정을 안전하게 저장했습니다.");
-            return true;
-        } catch (Exception e) {
-            status.setText("저장 실패: " + e.getMessage());
-            return false;
-        }
-    }
-
-    private void requestConnect() {
-        if (!saveProfile(false)) return;
-        pendingRaw = configText.getText().toString().trim();
-        Intent prepare = VpnService.prepare(this);
-        if (prepare != null) startActivityForResult(prepare, REQ_VPN);
-        else connectPending();
-    }
-
-    @Override
-    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
-        IntentResult scan = IntentIntegrator.parseActivityResult(requestCode, resultCode, data);
-        if (scan != null) {
-            if (scan.getContents() != null) importPairingPayload(scan.getContents());
+    private void enableFromUser() {
+        if (!store.hasSettings()) {
+            setSwitch(false);
+            toast("먼저 설정에서 역할과 고정 연결 암호를 저장해 주세요.");
+            showSettings();
             return;
         }
+        store.setDesiredEnabled(true);
+        store.setAutoReconnect(true);
+        Intent prepare = VpnService.prepare(this);
+        if (prepare != null) {
+            pendingEnableAfterPermission = true;
+            startActivityForResult(prepare, REQ_VPN);
+            return;
+        }
+        connectOrPair();
+    }
+
+    private void connectOrPair() {
+        if (store.hasConfig()) {
+            app.connectSaved((ok, message, state) -> runOnUiThread(() -> {
+                if (!ok) app.requestFreshProfile(true);
+                refreshMainState();
+            }));
+            ui.postDelayed(() -> {
+                if (store.isDesiredEnabled() && !app.hasRecentHandshake(90_000L))
+                    app.requestFreshProfile(true);
+            }, 9000L);
+        } else {
+            app.requestFreshProfile(true);
+        }
+        refreshMainState();
+    }
+
+    private void disableFromUser() {
+        store.setDesiredEnabled(false);
+        app.disconnect((ok, message, state) -> runOnUiThread(this::refreshMainState));
+        refreshMainState();
+    }
+
+    @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
         if (requestCode == REQ_VPN) {
-            if (resultCode == RESULT_OK) connectPending();
-            else status.setText("연결 권한이 거부되었습니다.");
+            if (resultCode == RESULT_OK && pendingEnableAfterPermission) {
+                pendingEnableAfterPermission = false;
+                connectOrPair();
+            } else if (resultCode != RESULT_OK) {
+                pendingEnableAfterPermission = false;
+                store.setDesiredEnabled(false);
+                setSwitch(false);
+                toast("VPN 권한이 필요합니다.");
+            }
         }
     }
 
-    private void connectPending() {
-        if (pendingRaw == null || pendingRaw.isEmpty()) pendingRaw = store.loadConfig();
-        status.setText("연결 중...");
-        app.connectRaw(pendingRaw, this::showResult);
-    }
+    private void refreshMainState() {
+        if (mainSwitch == null || networkState == null || footerState == null) return;
+        boolean desired = store.isDesiredEnabled();
+        setSwitch(desired);
 
-    private void disconnect() {
-        status.setText("연결 해제 중...");
-        app.disconnect((ok, message, state) -> runOnUiThread(() -> {
-            status.setText(message + " · " + state);
-            refreshStatus();
-            if (app.isAlwaysOn()) toast("Always-on이 켜져 있으면 Android가 다시 연결할 수 있습니다.");
-        }));
-    }
-
-    private void showResult(boolean ok, String message, Tunnel.State state) {
-        runOnUiThread(() -> {
-            status.setText((ok ? "● " : "! ") + message + " · " + state);
-            refreshStatus();
-        });
-    }
-
-    private void refreshStatus() {
-        if (status == null) return;
         Tunnel.State state = app.currentState();
-        status.setText("RoonLink: " + (state == Tunnel.State.UP ? "연결됨" : "연결 안 됨"));
-        boolean always = app.isAlwaysOn();
-        boolean lockdown = app.isLockdownEnabled();
-        alwaysOnStatus.setText("백그라운드 Always-on: " + (always ? "ON" : "OFF") +
-                (lockdown ? " · 'VPN 없이 연결 차단' ON → OFF 권장" : ""));
-        updateStats(state);
-    }
-
-    private void updateStats(Tunnel.State state) {
-        if (state != Tunnel.State.UP) {
-            linkStats.setText("상태: 대기 중");
-            return;
-        }
+        long hs = app.latestHandshakeEpochMillis();
         Statistics st = app.statistics();
-        if (st == null) {
-            linkStats.setText("상태: 연결됨 · 통계 확인 중");
+        if (!desired) {
+            networkState.setText("꺼짐");
+            footerState.setText("OFFLINE");
             return;
         }
-        long latest = 0;
-        for (Key k : st.peers()) {
-            Statistics.PeerStats ps = st.peer(k);
-            if (ps != null) latest = Math.max(latest, ps.latestHandshakeEpochMillis());
+        if (state != Tunnel.State.UP) {
+            networkState.setText("자동 연결 중…");
+            footerState.setText("PC와 연결을 복구하는 중입니다.");
+            app.recoverDesiredConnection("ui");
+            return;
         }
-        String hs = latest <= 0 ? "handshake 대기" : handshakeAge(latest);
-        linkStats.setText("상태: 연결됨 · " + hs + " · RX " + humanBytes(st.totalRx()) + " · TX " + humanBytes(st.totalTx()));
+        if (hs <= 0) {
+            networkState.setText("터널 열림 · handshake 대기");
+            footerState.setText("연결 경로를 확인하는 중입니다.");
+            return;
+        }
+        long sec = Math.max(0L, (System.currentTimeMillis() - hs) / 1000L);
+        String rxTx = "";
+        if (st != null) rxTx = " · RX " + humanBytes(st.totalRx()) + " · TX " + humanBytes(st.totalTx());
+        networkState.setText("연결됨 · handshake " + (sec < 60 ? sec + "초 전" : (sec / 60) + "분 전"));
+        footerState.setText("ONLINE" + rxTx);
     }
 
-    private static String handshakeAge(long epochMillis) {
-        long sec = Math.max(0, (System.currentTimeMillis() - epochMillis) / 1000);
-        if (sec < 60) return "handshake " + sec + "초 전";
-        if (sec < 3600) return "handshake " + (sec / 60) + "분 전";
-        return "handshake " + (sec / 3600) + "시간 전";
+    private void setSwitch(boolean checked) {
+        if (mainSwitch == null || mainSwitch.isChecked() == checked) return;
+        suppressSwitch = true;
+        mainSwitch.setChecked(checked);
+        suppressSwitch = false;
+    }
+
+    private void updateAlwaysOnText(TextView v) {
+        boolean always = app.isAlwaysOn();
+        v.setText("재부팅 자동 연결 보장: " + (always ? "Android Always-on ON" : "앱 자동 복구 ON · Always-on 미설정"));
+    }
+
+    private void openVpnSettings() {
+        try { startActivity(new Intent(Settings.ACTION_VPN_SETTINGS)); }
+        catch (Throwable t) { startActivity(new Intent(Settings.ACTION_SETTINGS)); }
     }
 
     private static String humanBytes(long n) {
@@ -350,19 +339,6 @@ public class MainActivity extends Activity {
         int i = -1;
         do { v /= 1024.0; i++; } while (v >= 1024 && i < u.length - 1);
         return String.format(Locale.US, "%.1f %s", v, u[i]);
-    }
-
-    private void openVpnSettings() {
-        try { startActivity(new Intent(Settings.ACTION_VPN_SETTINGS)); }
-        catch (Exception e) { startActivity(new Intent(Settings.ACTION_SETTINGS)); }
-    }
-
-    private void openBatterySettings() {
-        try {
-            Intent i = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
-            i.setData(android.net.Uri.parse("package:" + getPackageName()));
-            startActivity(i);
-        } catch (Exception e) { startActivity(new Intent(Settings.ACTION_SETTINGS)); }
     }
 
     private void toast(String s) { Toast.makeText(this, s, Toast.LENGTH_SHORT).show(); }
