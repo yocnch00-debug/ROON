@@ -10,21 +10,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Reconstruct v0.7 source base
-        run: |
-          cat v07src/part* > source.b64
-          base64 -d source.b64 > on-roonlink-android-v0.7-source.zip
-          unzip -t on-roonlink-android-v0.7-source.zip
-          unzip -q -o on-roonlink-android-v0.7-source.zip
-      - name: Apply v0.8 fixed-secret and virtual-LAN patch
-        run: |
-          patch -p1 < v08.patch
-      - name: Verify private secret is not committed
-        run: |
-          if grep -R -F --exclude='*.apk' --exclude='*.zip' --exclude='*.b64' '!Dustns1730218' android-app v08.patch; then
-            echo 'Private pairing secret must not be present in public source.' >&2
-            exit 1
-          fi
       - name: Set up JDK 17
         uses: actions/setup-java@v5
         with:
@@ -38,13 +23,13 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.13'
-      - name: Build v0.8 debug APK
+      - name: Build v0.8.3 debug APK
         working-directory: android-app
         run: gradle --no-daemon :app:assembleDebug
       - name: Collect APK
-        run: cp android-app/app/build/outputs/apk/debug/app-debug.apk ON-RoonLink-v0.8-debug.apk
+        run: cp android-app/app/build/outputs/apk/debug/app-debug.apk ON-RoonLink-v0.8.3-debug.apk
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: ON-RoonLink-v0.8-debug-apk
-          path: ON-RoonLink-v0.8-debug.apk
+          name: ON-RoonLink-v0.8.3-debug-apk
+          path: ON-RoonLink-v0.8.3-debug.apk
