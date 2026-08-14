@@ -21,6 +21,8 @@ final class SecureProfileStore {
     private static final String K_CONFIG = "config_enc";
     private static final String K_ROLE = "role";
     private static final String K_AUTO = "auto_reconnect";
+    private static final String K_SECRET = "pair_secret_enc";
+    private static final String K_DESIRED = "desired_enabled";
 
     enum Role {
         PHONE("스마트폰 · Roon Remote"),
@@ -45,14 +47,34 @@ final class SecureProfileStore {
                 .apply();
     }
 
+    void saveSettings(Role role, String secret, boolean autoReconnect) throws Exception {
+        prefs.edit()
+                .putString(K_ROLE, role.name())
+                .putString(K_SECRET, encrypt(secret == null ? "" : secret.trim()))
+                .putBoolean(K_AUTO, autoReconnect)
+                .apply();
+    }
+
     String loadConfig() {
         String enc = prefs.getString(K_CONFIG, "");
         if (enc == null || enc.isEmpty()) return "";
-        try {
-            return decrypt(enc);
-        } catch (Exception e) {
-            return "";
-        }
+        try { return decrypt(enc); }
+        catch (Exception e) { return ""; }
+    }
+
+    void clearConfig() {
+        prefs.edit().remove(K_CONFIG).apply();
+    }
+
+    void savePairSecret(String secret) throws Exception {
+        prefs.edit().putString(K_SECRET, encrypt(secret == null ? "" : secret.trim())).apply();
+    }
+
+    String loadPairSecret() {
+        String enc = prefs.getString(K_SECRET, "");
+        if (enc == null || enc.isEmpty()) return "";
+        try { return decrypt(enc); }
+        catch (Exception ignored) { return ""; }
     }
 
     Role loadRole() {
@@ -61,17 +83,20 @@ final class SecureProfileStore {
         catch (Exception ignored) { return Role.PHONE; }
     }
 
-    boolean isAutoReconnect() {
-        return prefs.getBoolean(K_AUTO, true);
+    boolean isAutoReconnect() { return prefs.getBoolean(K_AUTO, true); }
+    void setAutoReconnect(boolean enabled) { prefs.edit().putBoolean(K_AUTO, enabled).apply(); }
+
+    boolean isDesiredEnabled() {
+        if (prefs.contains(K_DESIRED)) return prefs.getBoolean(K_DESIRED, false);
+        return hasConfig();
     }
 
-    boolean hasConfig() {
-        return !loadConfig().trim().isEmpty();
+    void setDesiredEnabled(boolean enabled) {
+        prefs.edit().putBoolean(K_DESIRED, enabled).apply();
     }
 
-    void setAutoReconnect(boolean enabled) {
-        prefs.edit().putBoolean(K_AUTO, enabled).apply();
-    }
+    boolean hasConfig() { return !loadConfig().trim().isEmpty(); }
+    boolean hasSettings() { return !loadPairSecret().trim().isEmpty(); }
 
     private SecretKey getOrCreateKey() throws Exception {
         KeyStore ks = KeyStore.getInstance("AndroidKeyStore");
@@ -80,9 +105,7 @@ final class SecureProfileStore {
             KeyStore.SecretKeyEntry entry = (KeyStore.SecretKeyEntry) ks.getEntry(KEY_ALIAS, null);
             return entry.getSecretKey();
         }
-
-        KeyGenerator keyGenerator = KeyGenerator.getInstance(
-                KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore");
+        KeyGenerator keyGenerator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore");
         KeyGenParameterSpec spec = new KeyGenParameterSpec.Builder(
                 KEY_ALIAS,
                 KeyProperties.PURPOSE_ENCRYPT | KeyProperties.PURPOSE_DECRYPT)
@@ -110,14 +133,12 @@ final class SecureProfileStore {
         byte[] all = Base64.decode(encoded, Base64.NO_WRAP);
         ByteBuffer in = ByteBuffer.wrap(all);
         int ivLen = in.getInt();
-        if (ivLen < 12 || ivLen > 32 || ivLen > in.remaining()) {
+        if (ivLen < 12 || ivLen > 32 || ivLen > in.remaining())
             throw new IllegalArgumentException("invalid encrypted profile");
-        }
         byte[] iv = new byte[ivLen];
         in.get(iv);
         byte[] cipherText = new byte[in.remaining()];
         in.get(cipherText);
-
         Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
         cipher.init(Cipher.DECRYPT_MODE, getOrCreateKey(), new GCMParameterSpec(128, iv));
         return new String(cipher.doFinal(cipherText), StandardCharsets.UTF_8);
