@@ -11,6 +11,8 @@ import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.net.ConnectivityManager;
 import android.net.Network;
+import android.net.NetworkCapabilities;
+import android.net.NetworkRequest;
 import android.net.VpnService;
 import android.os.Build;
 
@@ -25,12 +27,14 @@ import java.nio.charset.StandardCharsets;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 public final class RoonLinkApp extends Application {
     private static final String CHANNEL_ID = "roonlink_status";
     private static final int NOTIFICATION_ID = 8801;
+    private static final long HANDSHAKE_STALE_MS = 180_000L;
 
     private static RoonLinkApp self;
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
@@ -41,6 +45,7 @@ public final class RoonLinkApp extends Application {
 
     private volatile GoBackend backend;
     private volatile Throwable backendInitError;
+    private volatile ScheduledFuture<?> healthCheckFuture;
     private SecureProfileStore store;
 
     @Override
@@ -137,6 +142,7 @@ public final class RoonLinkApp extends Application {
             Config cfg = parse(raw);
             Tunnel.State state = b.setState(tunnel, Tunnel.State.UP, cfg);
             showConnectionNotification();
+            scheduleHandshakeHealthCheck();
             if (cb != null) cb.done(true, "연결됨", state);
         } catch (Throwable e) {
             if (cb != null) cb.done(false, humanError(e), currentState());
@@ -145,6 +151,7 @@ public final class RoonLinkApp extends Application {
 
     void disconnect(ResultCallback cb) {
         worker.execute(() -> {
+            cancelHandshakeHealthCheck();
             GoBackend b = backend;
             if (b == null) {
                 hideConnectionNotification();
@@ -164,10 +171,21 @@ public final class RoonLinkApp extends Application {
     void recoverDesiredConnection(String reason) {
         if (store == null || !store.isDesiredEnabled() || !store.isAutoReconnect()) return;
         if (!isVpnAuthorized()) return;
+
+        // A healthy UP tunnel must never be restarted just because the UI refreshed,
+        // Android reported the VPN network, or another recovery trigger fired.
+        if (currentState() == Tunnel.State.UP) {
+            showConnectionNotification();
+            scheduleHandshakeHealthCheck();
+            return;
+        }
+
         if (!restoring.compareAndSet(false, true)) return;
         worker.execute(() -> {
             try {
-                if ("network".equals(reason)) Thread.sleep(700L);
+                if ("network".equals(reason)) Thread.sleep(1200L);
+                if (currentState() == Tunnel.State.UP) return;
+
                 if (store.hasConfig()) {
                     GoBackend b = ensureBackend();
                     if (b != null) {
@@ -181,14 +199,14 @@ public final class RoonLinkApp extends Application {
             } catch (Throwable ignored) {
             } finally {
                 restoring.set(false);
+                scheduleHandshakeHealthCheck();
             }
         });
-        scheduleHandshakeHealthCheck();
     }
 
     void requestFreshProfile(boolean force) {
         if (store == null || !store.isDesiredEnabled() || !store.hasSettings() || !isVpnAuthorized()) return;
-        if (!force && hasRecentHandshake(120_000L)) return;
+        if (!force && currentState() == Tunnel.State.UP && hasRecentHandshake(HANDSHAKE_STALE_MS)) return;
         if (!refreshingProfile.compareAndSet(false, true)) return;
         String secret = store.loadPairSecret();
         SecureProfileStore.Role role = store.loadRole();
@@ -197,24 +215,41 @@ public final class RoonLinkApp extends Application {
             @Override public void onSuccess(String conf) {
                 try {
                     store.save(conf.trim(), role, true);
-                    connectRaw(conf, null);
+                    if (store.isDesiredEnabled()) connectRaw(conf, null);
                 } catch (Throwable ignored) { }
                 finally { refreshingProfile.set(false); }
             }
             @Override public void onError(String message) {
                 refreshingProfile.set(false);
+                scheduleHandshakeHealthCheck();
             }
         });
     }
 
-    private void scheduleHandshakeHealthCheck() {
+    private synchronized void scheduleHandshakeHealthCheck() {
         try {
-            recoveryScheduler.schedule(() -> {
+            if (healthCheckFuture != null) healthCheckFuture.cancel(false);
+            healthCheckFuture = recoveryScheduler.schedule(() -> {
                 if (!store.isDesiredEnabled() || !store.isAutoReconnect()) return;
-                if (currentState() != Tunnel.State.UP || !hasRecentHandshake(90_000L))
+                Tunnel.State state = currentState();
+                if (state != Tunnel.State.UP) {
+                    recoverDesiredConnection("health-down");
+                    return;
+                }
+                if (!hasRecentHandshake(HANDSHAKE_STALE_MS)) {
                     requestFreshProfile(true);
-            }, 14, TimeUnit.SECONDS);
+                    return;
+                }
+                scheduleHandshakeHealthCheck();
+            }, 60, TimeUnit.SECONDS);
         } catch (Throwable ignored) { }
+    }
+
+    private synchronized void cancelHandshakeHealthCheck() {
+        try {
+            if (healthCheckFuture != null) healthCheckFuture.cancel(false);
+        } catch (Throwable ignored) { }
+        healthCheckFuture = null;
     }
 
     private synchronized GoBackend ensureBackend() {
@@ -242,9 +277,25 @@ public final class RoonLinkApp extends Application {
         try {
             ConnectivityManager cm = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
             if (cm == null) return;
-            cm.registerDefaultNetworkCallback(new ConnectivityManager.NetworkCallback() {
+
+            NetworkRequest request = new NetworkRequest.Builder()
+                    .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                    .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+                    .build();
+
+            cm.registerNetworkCallback(request, new ConnectivityManager.NetworkCallback() {
+                private volatile Network lastNetwork;
+
                 @Override public void onAvailable(Network network) {
+                    if (network == null) return;
+                    Network prev = lastNetwork;
+                    if (network.equals(prev)) return;
+                    lastNetwork = network;
                     recoverDesiredConnection("network");
+                }
+
+                @Override public void onLost(Network network) {
+                    if (network != null && network.equals(lastNetwork)) lastNetwork = null;
                 }
             });
         } catch (Throwable ignored) { }
