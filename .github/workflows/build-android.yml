@@ -2,7 +2,7 @@ name: Build Android APK
 
 on:
   push:
-    branches: [ v07-build ]
+    branches: [ v08-build ]
   workflow_dispatch:
 
 jobs:
@@ -10,105 +10,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Reconstruct v0.7 source
+      - name: Reconstruct v0.7 source base
         run: |
           cat v07src/part* > source.b64
           base64 -d source.b64 > on-roonlink-android-v0.7-source.zip
           unzip -t on-roonlink-android-v0.7-source.zip
           unzip -q -o on-roonlink-android-v0.7-source.zip
-      - name: Apply v0.7.4 Android response-polling fix
+      - name: Apply v0.8 fixed-secret and virtual-LAN patch
         run: |
-          python - <<'PY'
-          from pathlib import Path
-          p = Path('android-app/app/src/main/java/com/onroonlink/app/ShortPairClient.java')
-          s = p.read_text()
-          a = s.index('    private static String waitForResponse(')
-          b = s.index('    private static void publish(', a)
-          method = r'''    private static String waitForResponse(String topic, String nonce, KeyPair kp, byte[] pairKey, byte[] authKey) throws Exception {
-              long deadline = System.currentTimeMillis() + 60_000L;
-              int polls = 0;
-              Throwable lastNetworkError = null;
-              while (System.currentTimeMillis() < deadline) {
-                  HttpURLConnection c = null;
-                  try {
-                      URL u = new URL(RELAY_BASE + topic + "/json?poll=1&since=10m");
-                      c = (HttpURLConnection) u.openConnection();
-                      c.setRequestMethod("GET");
-                      c.setConnectTimeout(8_000);
-                      c.setReadTimeout(8_000);
-                      c.setUseCaches(false);
-                      c.setRequestProperty("Accept", "application/x-ndjson");
-                      c.setRequestProperty("Cache-Control", "no-cache");
-                      c.setRequestProperty("Connection", "close");
-                      int status = c.getResponseCode();
-                      if (status / 100 != 2) throw new IllegalStateException("페어링 응답 조회 HTTP " + status);
-                      try (InputStream in = c.getInputStream(); BufferedReader br = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8))) {
-                          String line;
-                          while ((line = br.readLine()) != null) {
-                              JSONObject j;
-                              try { j = new JSONObject(line); } catch (Throwable ignored) { continue; }
-                              if (!"message".equals(j.optString("event"))) continue;
-                              String msg = j.optString("message", "");
-                              if (!msg.startsWith("ONRL7RES|")) continue;
-                              String[] q = msg.split("\\|", -1);
-                              if (q.length != 6 || !nonce.equals(q[1])) continue;
-                              String canonical = "RES|" + q[1] + "|" + q[2] + "|" + q[3] + "|" + q[4];
-                              byte[] receivedMac;
-                              try { receivedMac = b64decode(q[5]); }
-                              catch (Throwable e) { throw new IllegalStateException("PC 응답 인증값 해석 실패", e); }
-                              if (!constantEquals(hmac(authKey, canonical.getBytes(StandardCharsets.UTF_8)), receivedMac))
-                                  throw new IllegalStateException("PC 응답 인증 실패");
-                              byte[] serverDer = b64decode(q[2]);
-                              byte[] iv = b64decode(q[3]);
-                              byte[] cipherText = b64decode(q[4]);
-                              PublicKey serverPub = KeyFactory.getInstance("EC").generatePublic(new X509EncodedKeySpec(serverDer));
-                              KeyAgreement ka = KeyAgreement.getInstance("ECDH");
-                              ka.init(kp.getPrivate());
-                              ka.doPhase(serverPub, true);
-                              byte[] sessionKey = deriveSessionKey(pairKey, nonce, ka.generateSecret());
-                              Cipher aes = Cipher.getInstance("AES/GCM/NoPadding");
-                              aes.init(Cipher.DECRYPT_MODE, new SecretKeySpec(sessionKey, "AES"), new GCMParameterSpec(128, iv));
-                              aes.updateAAD(nonce.getBytes(StandardCharsets.UTF_8));
-                              String conf = new String(aes.doFinal(cipherText), StandardCharsets.UTF_8).trim();
-                              if (!conf.contains("[Interface]") || !conf.contains("[Peer]"))
-                                  throw new IllegalArgumentException("PC 응답이 올바른 RoonLink 설정이 아닙니다.");
-                              return conf;
-                          }
-                      }
-                      lastNetworkError = null;
-                  } catch (Throwable t) {
-                      String m = t.getMessage() == null ? "" : t.getMessage();
-                      if (m.contains("인증") || m.contains("올바른 RoonLink")) {
-                          if (t instanceof Exception) throw (Exception)t;
-                          throw new Exception(t);
-                      }
-                      lastNetworkError = t;
-                  } finally {
-                      if (c != null) c.disconnect();
-                  }
-                  polls++;
-                  try { Thread.sleep(polls < 4 ? 350L : 700L); }
-                  catch (InterruptedException e) {
-                      Thread.currentThread().interrupt();
-                      throw new IllegalStateException("페어링이 중단되었습니다.");
-                  }
-              }
-              if (lastNetworkError != null && lastNetworkError.getMessage() != null && !lastNetworkError.getMessage().trim().isEmpty())
-                  throw new IllegalStateException("PC 응답 조회 실패: " + lastNetworkError.getMessage());
-              throw new IllegalStateException("PC는 요청을 받았지만 응답을 폰에서 가져오지 못했습니다. 새 8자리 코드로 다시 시도해 주세요.");
-          }
-
-          '''
-          p.write_text(s[:a] + method + s[b:])
-
-          g = Path('android-app/app/build.gradle.kts')
-          t = g.read_text().replace('versionCode = 7', 'versionCode = 74').replace('versionName = "0.7"', 'versionName = "0.7.4"')
-          g.write_text(t)
-
-          m = Path('android-app/app/src/main/java/com/onroonlink/app/MainActivity.java')
-          t = m.read_text().replace('Roon 전용 연결 · v0.7\\n', 'Roon 전용 연결 · v0.7.4\\n')
-          m.write_text(t)
-          PY
+          patch -p1 < v08.patch
+      - name: Verify private secret is not committed
+        run: |
+          if grep -R -F --exclude='*.apk' --exclude='*.zip' --exclude='*.b64' '!Dustns1730218' android-app v08.patch; then
+            echo 'Private pairing secret must not be present in public source.' >&2
+            exit 1
+          fi
       - name: Set up JDK 17
         uses: actions/setup-java@v5
         with:
@@ -122,13 +38,13 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.13'
-      - name: Build v0.7.4 debug APK
+      - name: Build v0.8 debug APK
         working-directory: android-app
         run: gradle --no-daemon :app:assembleDebug
       - name: Collect APK
-        run: cp android-app/app/build/outputs/apk/debug/app-debug.apk ON-RoonLink-v0.7.4-debug.apk
+        run: cp android-app/app/build/outputs/apk/debug/app-debug.apk ON-RoonLink-v0.8-debug.apk
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: ON-RoonLink-v0.7.4-debug-apk
-          path: ON-RoonLink-v0.7.4-debug.apk
+          name: ON-RoonLink-v0.8-debug-apk
+          path: ON-RoonLink-v0.8-debug.apk
