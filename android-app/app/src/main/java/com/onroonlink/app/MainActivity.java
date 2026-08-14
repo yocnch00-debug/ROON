@@ -84,7 +84,7 @@ public class MainActivity extends Activity {
         root.addView(top);
 
         TextView version = new TextView(this);
-        version.setText("Roon 가상 LAN · v0.8.3");
+        version.setText("Roon 가상 LAN · v0.8.4");
         version.setTextSize(13);
         version.setPadding(0, 0, 0, dp(18));
         root.addView(version);
@@ -125,7 +125,7 @@ public class MainActivity extends Activity {
         root.addView(footerState);
 
         TextView hint = new TextView(this);
-        hint.setText("한 번 설정한 뒤에는 이 스위치만 켜두면 됩니다. 네트워크가 바뀌거나 연결이 끊겨도 자동 복구를 시도합니다.");
+        hint.setText("한 번 설정한 뒤에는 이 스위치만 켜두면 됩니다. 실제 네트워크 변화나 장시간 handshake 실패 때만 자동 복구합니다.");
         hint.setTextSize(13);
         hint.setPadding(0, dp(8), 0, 0);
         root.addView(hint);
@@ -208,8 +208,8 @@ public class MainActivity extends Activity {
                 store.saveSettings(newRole, rawSecret, auto.isChecked());
                 if (changed) store.clearConfig();
                 if (store.isDesiredEnabled()) {
-                    app.requestFreshProfile(true);
-                    app.recoverDesiredConnection("settings");
+                    if (changed || !store.hasConfig()) app.requestFreshProfile(true);
+                    else app.recoverDesiredConnection("settings");
                 }
                 showMain();
             } catch (Throwable t) {
@@ -253,10 +253,6 @@ public class MainActivity extends Activity {
                 if (!ok) app.requestFreshProfile(true);
                 refreshMainState();
             }));
-            ui.postDelayed(() -> {
-                if (store.isDesiredEnabled() && !app.hasRecentHandshake(90_000L))
-                    app.requestFreshProfile(true);
-            }, 9000L);
         } else {
             app.requestFreshProfile(true);
         }
@@ -299,8 +295,7 @@ public class MainActivity extends Activity {
         }
         if (state != Tunnel.State.UP) {
             networkState.setText("자동 연결 중…");
-            footerState.setText("PC와 연결을 복구하는 중입니다.");
-            app.recoverDesiredConnection("ui");
+            footerState.setText("백그라운드 복구 대기 중입니다.");
             return;
         }
         if (hs <= 0) {
