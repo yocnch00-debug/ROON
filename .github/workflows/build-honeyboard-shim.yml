@@ -1,0 +1,33 @@
+name: Build HoneyBoard shim
+
+on:
+  push:
+    branches: [ honeyboard-port-build ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - name: Install Android build tools
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager 'build-tools;36.0.0'
+      - name: Compile shim
+        run: |
+          mkdir -p honeyboard-shim/out/classes honeyboard-shim/out/dex honeyboard-shim/artifact
+          javac --release 8 -d honeyboard-shim/out/classes honeyboard-shim/src/android/os/SemSystemProperties.java
+          "$ANDROID_HOME/build-tools/36.0.0/d8" --min-api 28 --output honeyboard-shim/out/dex honeyboard-shim/out/classes/android/os/SemSystemProperties.class
+          cp honeyboard-shim/out/dex/classes.dex honeyboard-shim/artifact/classes5.dex
+          cp "$ANDROID_HOME/build-tools/36.0.0/lib/apksigner.jar" honeyboard-shim/artifact/apksigner.jar
+      - name: Upload shim tools
+        uses: actions/upload-artifact@v4
+        with:
+          name: honeyboard-shim-tools
+          path: honeyboard-shim/artifact/
