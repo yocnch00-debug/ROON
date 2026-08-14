@@ -10,8 +10,8 @@ android {
         applicationId = "com.onroonlink.app"
         minSdk = 24
         targetSdk = 36
-        versionCode = 83
-        versionName = "0.8.3"
+        versionCode = 84
+        versionName = "0.8.4"
     }
 
     compileOptions {
