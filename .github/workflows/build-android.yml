@@ -23,13 +23,13 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.13'
-      - name: Build v0.8.3 debug APK
+      - name: Build v0.8.4 debug APK
         working-directory: android-app
         run: gradle --no-daemon :app:assembleDebug
       - name: Collect APK
-        run: cp android-app/app/build/outputs/apk/debug/app-debug.apk ON-RoonLink-v0.8.3-debug.apk
+        run: cp android-app/app/build/outputs/apk/debug/app-debug.apk ON-RoonLink-v0.8.4-debug.apk
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: ON-RoonLink-v0.8.3-debug-apk
-          path: ON-RoonLink-v0.8.3-debug.apk
+          name: ON-RoonLink-v0.8.4-debug-apk
+          path: ON-RoonLink-v0.8.4-debug.apk
