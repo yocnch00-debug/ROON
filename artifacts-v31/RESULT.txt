@@ -1,2 +1,2 @@
-bridge=failure
-apk=failure
+bridge=success
+apk=success
