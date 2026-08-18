@@ -6,6 +6,11 @@ on:
     paths:
       - 'android-netshare/**'
       - '.github/workflows/build-netshare.yml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'android-netshare/**'
+      - '.github/workflows/build-netshare.yml'
   workflow_dispatch:
 
 permissions:
@@ -51,7 +56,7 @@ jobs:
           name: ON-RoonLink-Native-v1-alpha3-NETSHARE-build
           path: artifacts/
       - name: Publish outputs into repository
-        if: always()
+        if: always() && github.event_name == 'push'
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
