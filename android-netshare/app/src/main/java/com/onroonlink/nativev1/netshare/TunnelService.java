@@ -28,7 +28,7 @@ public class TunnelService extends VpnService {
     @Override public void onCreate() {
         super.onCreate();
         if (Build.VERSION.SDK_INT >= 26) {
-            NotificationChannel c = new NotificationChannel(CH, "ON RoonLink NetShare", NotificationManager.IMPORTANCE_LOW);
+            NotificationChannel c = new NotificationChannel(CH, "ON RoonLink Full Tunnel", NotificationManager.IMPORTANCE_LOW);
             getSystemService(NotificationManager.class).createNotificationChannel(c);
         }
     }
@@ -43,13 +43,17 @@ public class TunnelService extends VpnService {
         if (role == null) role = sp.getString("role", "DAP");
         if (proxyHost == null || proxyHost.isEmpty()) proxyHost = sp.getString("proxyHost", DEFAULT_PROXY_HOST);
         if (proxyPort <= 0) proxyPort = sp.getInt("proxyPort", DEFAULT_PROXY_PORT);
-        startForeground(1001, notification("NetShare 경로 확인중"));
+        startForeground(1001, notification("NetShare 로컬 프록시 확인중"));
         start(password, role, proxyHost, proxyPort);
         return START_STICKY;
     }
 
     Notification notification(String text) {
-        return new Notification.Builder(this, CH).setContentTitle("ON RoonLink NS").setContentText(text).setSmallIcon(android.R.drawable.stat_sys_upload_done).build();
+        return new Notification.Builder(this, CH)
+                .setContentTitle("ON RoonLink DAP Full Tunnel")
+                .setContentText(text)
+                .setSmallIcon(android.R.drawable.stat_sys_upload_done)
+                .build();
     }
 
     void start(String password, String role, String proxyHost, int proxyPort) {
@@ -83,6 +87,9 @@ public class TunnelService extends VpnService {
     }
 
     void connectOnce(String password, String role, String proxyHost, int proxyPort) throws Exception {
+        // Important: this socket is protected BEFORE the VPN is established.
+        // It therefore keeps using the physical NetShare Wi-Fi and reaches
+        // 192.168.49.1:8282 even after this app becomes the only Android VPN.
         notifyText("NetShare 프록시 연결중 " + proxyHost + ":" + proxyPort);
         sock = connectViaHttpProxy(proxyHost, proxyPort, DIRECT_HOST, DIRECT_PORT, SERVER_FP);
 
@@ -95,16 +102,24 @@ public class TunnelService extends VpnService {
         String ip = res.substring(3).trim();
 
         Builder b = new Builder()
-                .setSession("ON RoonLink NS")
-                .setMtu(1400)
+                .setSession("ON RoonLink DAP Full Tunnel")
+                .setMtu(1280)
                 .addAddress(ip,24)
-                .addRoute("10.89.0.0",24)
-                .addRoute("224.0.0.0",4);
+                // DAP host is isolated on 10.90.0.0/24 so the existing
+                // PHONE alpha7 host on 10.89.0.0/24 can stay untouched.
+                .addRoute("10.90.0.0",24)
+                .addRoute("224.0.0.0",4)
+                // Full tunnel: ordinary Internet traffic also goes through
+                // the PC. The outer TLS socket above is protected and does
+                // not loop back into this route.
+                .addRoute("0.0.0.0",0)
+                .addDnsServer("1.1.1.1")
+                .addDnsServer("8.8.8.8");
         if (Build.VERSION.SDK_INT >= 29) b.setBlocking(true);
         tun = b.establish();
         if (tun == null) throw new IOException("VPN 인터페이스 생성 실패");
 
-        notifyText(role + " 연결됨 · NetShare + ON RoonLink");
+        notifyText(role + " 연결됨 · 인터넷 + Roon 통합 터널");
         InputStream net = sock.getInputStream();
         FileInputStream ti = new FileInputStream(tun.getFileDescriptor());
         FileOutputStream to = new FileOutputStream(tun.getFileDescriptor());
@@ -139,8 +154,8 @@ public class TunnelService extends VpnService {
     SSLSocket connectViaHttpProxy(String proxyHost, int proxyPort, String targetHost, int targetPort, String fp) throws Exception {
         Socket plain = new Socket();
         if (!protect(plain)) throw new IOException("기본 네트워크 소켓 보호 실패");
-        plain.connect(new InetSocketAddress(proxyHost, proxyPort), 4000);
-        plain.setSoTimeout(5000);
+        plain.connect(new InetSocketAddress(proxyHost, proxyPort), 5000);
+        plain.setSoTimeout(7000);
         plain.setTcpNoDelay(true);
 
         OutputStream po = plain.getOutputStream();
@@ -148,7 +163,8 @@ public class TunnelService extends VpnService {
         String req = "CONNECT " + authority + " HTTP/1.1\r\n" +
                 "Host: " + authority + "\r\n" +
                 "Proxy-Connection: Keep-Alive\r\n" +
-                "User-Agent: ON-RoonLink-NS/1.0\r\n\r\n";
+                "Connection: Keep-Alive\r\n" +
+                "User-Agent: ON-RoonLink-DAP-FullTunnel/1.0\r\n\r\n";
         po.write(req.getBytes("ISO-8859-1"));
         po.flush();
 
