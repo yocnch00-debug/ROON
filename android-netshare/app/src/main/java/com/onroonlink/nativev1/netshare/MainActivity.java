@@ -19,7 +19,7 @@ public class MainActivity extends Activity {
                 String s = getSharedPreferences("onrl1ns",0).getString("lastStatus", "대기중");
                 status.setText(s);
             }
-            handler.postDelayed(this, 700);
+            handler.postDelayed(this, 500);
         }
     };
 
@@ -32,7 +32,7 @@ public class MainActivity extends Activity {
         sv.addView(l);
 
         TextView title = new TextView(this);
-        title.setText("ON RoonLink R8 II Single VPN v22");
+        title.setText("ON RoonLink R8 II Single VPN v23");
         title.setTextSize(24);
         title.setTextColor(Color.BLACK);
         l.addView(title, new LinearLayout.LayoutParams(-1, -2));
@@ -43,7 +43,7 @@ public class MainActivity extends Activity {
                 "2) R8 II는 NetShare Wi-Fi에 연결합니다.\n" +
                 "3) NetShare VPN이 켜져 있어도 그대로 둔 채 아래 연결을 누르세요.\n" +
                 "4) Android가 VPN 변경을 물으면 ON RoonLink를 허용합니다.\n\n" +
-                "ON RoonLink가 VPN 자리를 이어받은 뒤 물리 NetShare Wi-Fi의 192.168.49.1:8282를 직접 사용합니다. PC 진입은 TCP 443을 먼저 시도하고 51900을 예비 경로로 사용합니다. PHONE용 S26 설정은 건드리지 않습니다.");
+                "v23은 TCP 51900만 사용합니다. 이전 연결 스레드가 새 연결을 닫던 재접속 레이스와 인증라인 버퍼링 문제를 수정했습니다. PHONE용 S26 설정은 건드리지 않습니다.");
         d.setPadding(0, 18, 0, 18);
         l.addView(d);
 
