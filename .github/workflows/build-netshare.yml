@@ -30,21 +30,34 @@ jobs:
         with:
           gradle-version: '8.13'
       - name: Build NetShare APK
+        id: build
+        continue-on-error: true
         working-directory: android-netshare
-        run: gradle --no-daemon :app:assembleDebug
-      - name: Collect APK
+        run: |
+          set -o pipefail
+          gradle --no-daemon :app:assembleDebug 2>&1 | tee ../netshare-build.log
+      - name: Collect outputs
+        if: always()
         run: |
           mkdir -p artifacts
-          cp android-netshare/app/build/outputs/apk/debug/app-debug.apk artifacts/ON-RoonLink-Native-v1-alpha3-NETSHARE.apk
-      - name: Upload APK
+          cp netshare-build.log artifacts/netshare-build.log || true
+          if [ -f android-netshare/app/build/outputs/apk/debug/app-debug.apk ]; then
+            cp android-netshare/app/build/outputs/apk/debug/app-debug.apk artifacts/ON-RoonLink-Native-v1-alpha3-NETSHARE.apk
+          fi
+      - name: Upload build outputs
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ON-RoonLink-Native-v1-alpha3-NETSHARE
-          path: artifacts/ON-RoonLink-Native-v1-alpha3-NETSHARE.apk
-      - name: Publish APK into repository
+          name: ON-RoonLink-Native-v1-alpha3-NETSHARE-build
+          path: artifacts/
+      - name: Publish outputs into repository
+        if: always()
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add artifacts/ON-RoonLink-Native-v1-alpha3-NETSHARE.apk
-          git commit -m 'Build NetShare APK [skip ci]' || exit 0
+          git add artifacts/
+          git commit -m 'Publish NetShare build outputs [skip ci]' || exit 0
           git push
+      - name: Fail job if build failed
+        if: steps.build.outcome != 'success'
+        run: exit 1
