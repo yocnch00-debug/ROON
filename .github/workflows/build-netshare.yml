@@ -8,6 +8,9 @@ on:
       - '.github/workflows/build-netshare.yml'
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -30,9 +33,18 @@ jobs:
         working-directory: android-netshare
         run: gradle --no-daemon :app:assembleDebug
       - name: Collect APK
-        run: cp android-netshare/app/build/outputs/apk/debug/app-debug.apk ON-RoonLink-Native-v1-alpha3-NETSHARE.apk
+        run: |
+          mkdir -p artifacts
+          cp android-netshare/app/build/outputs/apk/debug/app-debug.apk artifacts/ON-RoonLink-Native-v1-alpha3-NETSHARE.apk
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: ON-RoonLink-Native-v1-alpha3-NETSHARE
-          path: ON-RoonLink-Native-v1-alpha3-NETSHARE.apk
+          path: artifacts/ON-RoonLink-Native-v1-alpha3-NETSHARE.apk
+      - name: Publish APK into repository
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add artifacts/ON-RoonLink-Native-v1-alpha3-NETSHARE.apk
+          git commit -m 'Build NetShare APK [skip ci]' || exit 0
+          git push
