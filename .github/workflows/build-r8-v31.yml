@@ -31,35 +31,52 @@ jobs:
           sdkmanager 'platforms;android-36' 'build-tools;36.0.0' 'ndk;27.2.12479018'
           echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/27.2.12479018" >> "$GITHUB_ENV"
       - name: Build tiny tun2socks mobile bridge
+        id: bridge
+        continue-on-error: true
         run: |
-          go install golang.org/x/mobile/cmd/gomobile@latest
-          go install golang.org/x/mobile/cmd/gobind@latest
-          gomobile init
-          mkdir -p android-v31/app/libs
-          cd mobileproxy
-          go mod tidy
-          gomobile bind -target=android -androidapi 26 -o ../android-v31/app/libs/tunbridge.aar ./tunbridge
-          ls -lh ../android-v31/app/libs/tunbridge.aar
+          set -o pipefail
+          mkdir -p artifacts-v31 android-v31/app/libs
+          {
+            go install golang.org/x/mobile/cmd/gomobile@latest
+            go install golang.org/x/mobile/cmd/gobind@latest
+            gomobile init
+            cd mobileproxy
+            go mod tidy
+            gomobile bind -target=android -androidapi 26 -o ../android-v31/app/libs/tunbridge.aar ./tunbridge
+            ls -lh ../android-v31/app/libs/tunbridge.aar
+          } 2>&1 | tee artifacts-v31/bridge-build.log
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.13'
       - name: Build APK
+        id: apk
+        continue-on-error: true
         working-directory: android-v31
-        run: gradle --no-daemon :app:assembleDebug
-      - name: Collect
         run: |
-          rm -rf artifacts-v31
+          set -o pipefail
+          gradle --no-daemon :app:assembleDebug 2>&1 | tee ../artifacts-v31/android-build.log
+      - name: Collect
+        if: always()
+        run: |
           mkdir -p artifacts-v31
-          cp android-v31/app/build/outputs/apk/debug/app-debug.apk artifacts-v31/ON-RoonLink-R8II-NETSHARE-POLICY-v31.apk
-          sha256sum artifacts-v31/ON-RoonLink-R8II-NETSHARE-POLICY-v31.apk > artifacts-v31/SHA256.txt
+          if [ -f android-v31/app/build/outputs/apk/debug/app-debug.apk ]; then
+            cp android-v31/app/build/outputs/apk/debug/app-debug.apk artifacts-v31/ON-RoonLink-R8II-NETSHARE-POLICY-v31.apk
+            sha256sum artifacts-v31/ON-RoonLink-R8II-NETSHARE-POLICY-v31.apk > artifacts-v31/SHA256.txt
+          fi
+          printf 'bridge=%s\napk=%s\n' '${{ steps.bridge.outcome }}' '${{ steps.apk.outcome }}' > artifacts-v31/RESULT.txt
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: ON-RoonLink-R8II-NETSHARE-POLICY-v31
           path: artifacts-v31/
-      - name: Publish branch artifact
+      - name: Publish branch artifact and logs
+        if: always()
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add -f artifacts-v31/
-          git commit -m 'Publish v31 build artifact [skip ci]' || exit 0
+          git commit -m 'Publish v31 build result [skip ci]' || exit 0
           git push origin HEAD:r8-v31-policy
+      - name: Fail if build failed
+        if: steps.bridge.outcome != 'success' || steps.apk.outcome != 'success'
+        run: exit 1
