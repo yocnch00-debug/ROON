@@ -5,6 +5,7 @@ import android.net.Network;
 import android.net.VpnService;
 
 import java.io.*;
+import java.net.Socket;
 import java.nio.*;
 import java.nio.charset.StandardCharsets;
 import java.security.*;
@@ -23,7 +24,7 @@ final class Alpha7Link implements Closeable {
     final Network wifi;
     final String password;
     final SharedPreferences sp;
-    Socks5.UdpAssociation transport;
+    FramedTcpDatagram transport;
     byte[] deviceKey;
     byte[] sendSession=new byte[8], recvSession=new byte[8];
     int sendSeq=0, recvSeq=0;
@@ -33,7 +34,8 @@ final class Alpha7Link implements Closeable {
 
     void connect() throws Exception {
         close();
-        transport=Socks5.openUdp(vpn,wifi,"192.168.49.1",8282,5000);
+        Socket s=Socks5.connectTcp(vpn,wifi,"192.168.49.1",8282,HOST,PORT,7000);
+        transport=new FramedTcpDatagram(s);
         String saved=sp.getString("dap_device_key","");
         if(!saved.isEmpty()){
             try{deviceKey=Base64.getDecoder().decode(saved); if(!helloAndWait()){deviceKey=null;sp.edit().remove("dap_device_key").apply();}}
@@ -51,7 +53,7 @@ final class Alpha7Link implements Closeable {
         new SecureRandom().nextBytes(sendSession);sendSeq=0;recvSeq=0;Arrays.fill(recvSession,(byte)0);
         sendSecure((byte)0x10,"HELLO".getBytes(StandardCharsets.UTF_8));
         try{
-            byte[] p=transport.receive(5000);
+            byte[] p=transport.receive(7000);
             if(p.length<18)return false;
             byte typ=p[4];
             byte[] plain=openSecure(p);
@@ -70,8 +72,8 @@ final class Alpha7Link implements Closeable {
         byte[] ct=rsa.doFinal(plain.getBytes(StandardCharsets.UTF_8));
         ByteBuffer q=ByteBuffer.allocate(7+ct.length).order(ByteOrder.BIG_ENDIAN);
         q.put(MAGIC.getBytes(StandardCharsets.US_ASCII));q.put((byte)1);q.putShort((short)ct.length);q.put(ct);
-        transport.send(HOST,PORT,q.array());
-        byte[] p=transport.receive(5000);
+        transport.send(q.array());
+        byte[] p=transport.receive(7000);
         if(p.length<5+12+16||p[4]!=2)throw new IOException("alpha7 페어링 응답 오류");
         byte[] head=Arrays.copyOfRange(p,0,5),nonce=Arrays.copyOfRange(p,5,17),enc=Arrays.copyOfRange(p,17,p.length);
         byte[] out=aesOpen(temp,nonce,enc,head);
@@ -100,7 +102,7 @@ final class Alpha7Link implements Closeable {
         h.put(MAGIC.getBytes(StandardCharsets.US_ASCII));h.put(typ);h.put((byte)2);h.put(sendSession);h.putInt(sendSeq);
         byte[] head=h.array(),nonce=Arrays.copyOfRange(head,6,18),ct=aesSeal(deviceKey,nonce,plain,head);
         byte[] out=new byte[head.length+ct.length];System.arraycopy(head,0,out,0,head.length);System.arraycopy(ct,0,out,head.length,ct.length);
-        transport.send(HOST,PORT,out);
+        transport.send(out);
     }
 
     synchronized byte[] openSecure(byte[] p) throws Exception {
