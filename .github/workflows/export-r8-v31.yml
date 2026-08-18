@@ -1,0 +1,34 @@
+name: Export R8 v31 APK
+
+on:
+  push:
+    branches: [ "r8-v31-policy" ]
+    paths:
+      - ".github/workflows/export-r8-v31.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Record run id
+        run: |
+          echo "$GITHUB_RUN_ID" > artifacts-v31/DOWNLOAD_RUN_ID.txt
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ON-RoonLink-R8II-NETSHARE-POLICY-v31-DOWNLOAD
+          path: |
+            artifacts-v31/ON-RoonLink-R8II-NETSHARE-POLICY-v31.apk
+            artifacts-v31/SHA256.txt
+      - name: Publish run id
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -f artifacts-v31/DOWNLOAD_RUN_ID.txt
+          git commit -m 'Publish v31 download run id [skip ci]' || exit 0
+          git push origin HEAD:r8-v31-policy
