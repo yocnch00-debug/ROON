@@ -12,6 +12,16 @@ public class MainActivity extends Activity {
     EditText password, proxyHost, proxyPort;
     TextView status;
     static final int VPN_REQ = 77;
+    final Handler handler = new Handler(Looper.getMainLooper());
+    final Runnable statusPoll = new Runnable() {
+        @Override public void run() {
+            if (status != null) {
+                String s = getSharedPreferences("onrl1ns",0).getString("lastStatus", "대기중");
+                status.setText(s);
+            }
+            handler.postDelayed(this, 700);
+        }
+    };
 
     @Override public void onCreate(Bundle b) {
         super.onCreate(b);
@@ -22,18 +32,18 @@ public class MainActivity extends Activity {
         sv.addView(l);
 
         TextView title = new TextView(this);
-        title.setText("ON RoonLink R8 II Full Tunnel v21");
+        title.setText("ON RoonLink R8 II Single VPN v22");
         title.setTextSize(24);
         title.setTextColor(Color.BLACK);
         l.addView(title, new LinearLayout.LayoutParams(-1, -2));
 
         TextView d = new TextView(this);
-        d.setText("R8 II + NetShare 전용 통합판입니다.\n\n" +
+        d.setText("R8 II + NetShare 전용 단일 VPN판입니다.\n\n" +
                 "1) S26의 NetShare 핫스팟은 그대로 켜둡니다.\n" +
                 "2) R8 II는 NetShare Wi-Fi에 연결합니다.\n" +
-                "3) R8 II의 NetShare VPN만 끕니다.\n" +
-                "4) 이 앱에서 연결합니다.\n\n" +
-                "이 앱 하나가 R8 II의 VPN이 되고, 바깥 연결은 NetShare 192.168.49.1:8282 프록시를 통해 PC 통합 Host로 들어갑니다. PHONE용 S26 설정은 건드리지 않습니다.");
+                "3) NetShare VPN이 켜져 있어도 그대로 둔 채 아래 연결을 누르세요.\n" +
+                "4) Android가 VPN 변경을 물으면 ON RoonLink를 허용합니다.\n\n" +
+                "ON RoonLink가 VPN 자리를 이어받은 뒤 물리 NetShare Wi-Fi의 192.168.49.1:8282를 직접 사용합니다. PC 진입은 TCP 443을 먼저 시도하고 51900을 예비 경로로 사용합니다. PHONE용 S26 설정은 건드리지 않습니다.");
         d.setPadding(0, 18, 0, 18);
         l.addView(d);
 
@@ -67,7 +77,7 @@ public class MainActivity extends Activity {
         l.addView(prow);
 
         Button c = new Button(this);
-        c.setText("R8 II 연결");
+        c.setText("NetShare 상태 그대로 → R8 II 연결");
         l.addView(c);
         Button x = new Button(this);
         x.setText("연결 끊기");
@@ -76,6 +86,7 @@ public class MainActivity extends Activity {
         status = new TextView(this);
         status.setText("대기중");
         status.setPadding(0, 22, 0, 0);
+        status.setTextSize(15);
         l.addView(status);
         setContentView(sv);
 
@@ -87,8 +98,20 @@ public class MainActivity extends Activity {
         c.setOnClickListener(v -> prepare());
         x.setOnClickListener(v -> {
             stopService(new Intent(this, TunnelService.class));
+            getSharedPreferences("onrl1ns",0).edit().putString("lastStatus","연결 끊김").apply();
             status.setText("연결 끊김");
         });
+    }
+
+    @Override protected void onResume() {
+        super.onResume();
+        handler.removeCallbacks(statusPoll);
+        handler.post(statusPoll);
+    }
+
+    @Override protected void onPause() {
+        super.onPause();
+        handler.removeCallbacks(statusPoll);
     }
 
     void prepare() {
@@ -111,6 +134,7 @@ public class MainActivity extends Activity {
                 .putString("role","DAP")
                 .putString("proxyHost",ph)
                 .putInt("proxyPort",pp)
+                .putString("lastStatus","VPN 권한 확인중")
                 .apply();
         Intent i = VpnService.prepare(this);
         if (i != null) startActivityForResult(i, VPN_REQ);
@@ -125,11 +149,17 @@ public class MainActivity extends Activity {
         i.putExtra("proxyHost", sp.getString("proxyHost", TunnelService.DEFAULT_PROXY_HOST));
         i.putExtra("proxyPort", sp.getInt("proxyPort", TunnelService.DEFAULT_PROXY_PORT));
         if (Build.VERSION.SDK_INT >= 26) startForegroundService(i); else startService(i);
-        status.setText("NetShare 프록시 → PC 통합 Host 연결 요청됨");
+        status.setText("물리 NetShare Wi-Fi 확인중...");
     }
 
     @Override protected void onActivityResult(int r, int c, Intent d) {
         super.onActivityResult(r,c,d);
-        if (r == VPN_REQ && c == RESULT_OK) startTunnel();
+        if (r == VPN_REQ) {
+            if (c == RESULT_OK) startTunnel();
+            else {
+                getSharedPreferences("onrl1ns",0).edit().putString("lastStatus","VPN 변경 권한이 거부됨").apply();
+                status.setText("VPN 변경 권한이 거부됨");
+            }
+        }
     }
 }
