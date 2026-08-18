@@ -6,6 +6,11 @@ on:
     paths:
       - "native-alpha6/**"
       - ".github/workflows/build-native-alpha6.yml"
+  pull_request:
+    branches: [ "main" ]
+    paths:
+      - "native-alpha6/**"
+      - ".github/workflows/build-native-alpha6.yml"
   workflow_dispatch:
 
 jobs:
