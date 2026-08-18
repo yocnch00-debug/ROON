@@ -7,6 +7,12 @@ on:
       - "android-v31/**"
       - "mobileproxy/**"
       - ".github/workflows/build-r8-v31.yml"
+  pull_request:
+    branches: [ "main" ]
+    paths:
+      - "android-v31/**"
+      - "mobileproxy/**"
+      - ".github/workflows/build-r8-v31.yml"
   workflow_dispatch:
 
 permissions:
@@ -72,7 +78,7 @@ jobs:
           name: ON-RoonLink-R8II-NETSHARE-POLICY-v32
           path: artifacts-v31/
       - name: Publish branch artifact and logs
-        if: always()
+        if: github.event_name == 'push'
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
