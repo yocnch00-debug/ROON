@@ -9,6 +9,9 @@ on:
       - ".github/workflows/build-r8-v31.yml"
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -45,10 +48,18 @@ jobs:
         run: gradle --no-daemon :app:assembleDebug
       - name: Collect
         run: |
-          mkdir -p artifact
-          cp android-v31/app/build/outputs/apk/debug/app-debug.apk artifact/ON-RoonLink-R8II-NETSHARE-POLICY-v31.apk
-          sha256sum artifact/ON-RoonLink-R8II-NETSHARE-POLICY-v31.apk > artifact/SHA256.txt
+          rm -rf artifacts-v31
+          mkdir -p artifacts-v31
+          cp android-v31/app/build/outputs/apk/debug/app-debug.apk artifacts-v31/ON-RoonLink-R8II-NETSHARE-POLICY-v31.apk
+          sha256sum artifacts-v31/ON-RoonLink-R8II-NETSHARE-POLICY-v31.apk > artifacts-v31/SHA256.txt
       - uses: actions/upload-artifact@v4
         with:
           name: ON-RoonLink-R8II-NETSHARE-POLICY-v31
-          path: artifact/
+          path: artifacts-v31/
+      - name: Publish branch artifact
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -f artifacts-v31/
+          git commit -m 'Publish v31 build artifact [skip ci]' || exit 0
+          git push origin HEAD:r8-v31-policy
