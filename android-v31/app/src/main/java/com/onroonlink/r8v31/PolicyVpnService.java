@@ -54,7 +54,14 @@ public class PolicyVpnService extends VpnService {
     void status(String s){getSharedPreferences("v31",0).edit().putString("status",s).apply();try{getSystemService(NotificationManager.class).notify(3101,notification(s));}catch(Exception ignored){}}
 
     synchronized void startSession(String password){
-        stopSession();
+        // Do not restart a live service in-place. Past builds had a reconnect race
+        // where an old worker could close a newly-created session. A single v31
+        // service owns exactly one main loop until the user explicitly disconnects.
+        if(main!=null && main.isAlive()){
+            status("이미 v31 실행중 · 먼저 연결 끊기를 누르세요");
+            return;
+        }
+        cleanupSession();
         running.set(true);
         main=new Thread(()->runLoop(password),"ONRL-v31-main");
         main.start();
