@@ -6,8 +6,8 @@ android {
         applicationId = "com.onroonlink.nativev1.netshare"
         minSdk = 26
         targetSdk = 36
-        versionCode = 22
-        versionName = "1.0-r8-singlevpn-v22"
+        versionCode = 23
+        versionName = "1.0-r8-singlevpn-v23-racefix"
     }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
 }
