@@ -32,17 +32,17 @@ public class MainActivity extends Activity {
         sv.addView(l);
 
         TextView title = new TextView(this);
-        title.setText("ON RoonLink R8 II · NetShare Policy v31");
+        title.setText("ON RoonLink R8 II · NetShare Policy v32");
         title.setTextSize(23);
         title.setTextColor(Color.BLACK);
         l.addView(title);
 
         TextView desc = new TextView(this);
-        desc.setText("PC/S26는 기존 정상 상태 그대로 둡니다.\n\n"+
+        desc.setText("PC/S26의 기존 정상 PHONE 구조는 그대로 둡니다.\n\n"+
                 "인터넷 : NetShare SOCKS5 192.168.49.1:8282\n"+
-                "Roon : 기존 alpha7 UDP/AES-GCM → PC UDP 51900\n"+
+                "Roon : alpha7 UDP/AES-GCM → TCP 51900 Bridge → 기존 PC UDP Host\n"+
                 "R8 가상 IP : 10.89.0.3\n\n"+
-                "연결 버튼을 누르면 TCP/UDP 인터넷과 alpha7 DAP 응답을 먼저 검사한 뒤 단일 VPN을 시작합니다.");
+                "연결 버튼을 누르면 인터넷 경로와 alpha7 DAP 응답을 확인한 뒤 단일 VPN을 시작합니다.");
         desc.setPadding(0,18,0,18);
         l.addView(desc);
 
