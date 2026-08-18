@@ -1,0 +1,54 @@
+name: Build R8 v31 Policy APK
+
+on:
+  push:
+    branches: [ "r8-v31-policy" ]
+    paths:
+      - "android-v31/**"
+      - "mobileproxy/**"
+      - ".github/workflows/build-r8-v31.yml"
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.0'
+      - uses: android-actions/setup-android@v3
+      - name: Install Android SDK + NDK
+        run: |
+          yes | sdkmanager --licenses >/dev/null
+          sdkmanager 'platforms;android-36' 'build-tools;36.0.0' 'ndk;27.2.12479018'
+          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/27.2.12479018" >> "$GITHUB_ENV"
+      - name: Build tiny tun2socks mobile bridge
+        run: |
+          go install golang.org/x/mobile/cmd/gomobile@latest
+          go install golang.org/x/mobile/cmd/gobind@latest
+          gomobile init
+          mkdir -p android-v31/app/libs
+          cd mobileproxy
+          go mod tidy
+          gomobile bind -target=android -androidapi 26 -o ../android-v31/app/libs/tunbridge.aar ./tunbridge
+          ls -lh ../android-v31/app/libs/tunbridge.aar
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.13'
+      - name: Build APK
+        working-directory: android-v31
+        run: gradle --no-daemon :app:assembleDebug
+      - name: Collect
+        run: |
+          mkdir -p artifact
+          cp android-v31/app/build/outputs/apk/debug/app-debug.apk artifact/ON-RoonLink-R8II-NETSHARE-POLICY-v31.apk
+          sha256sum artifact/ON-RoonLink-R8II-NETSHARE-POLICY-v31.apk > artifact/SHA256.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ON-RoonLink-R8II-NETSHARE-POLICY-v31
+          path: artifact/
