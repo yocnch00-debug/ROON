@@ -9,7 +9,7 @@ android {
         minSdk = 26
         targetSdk = 36
         versionCode = 3
-        versionName = "1.2-public-relay"
+        versionName = "1.2-public-secure"
     }
 
     signingConfigs {
