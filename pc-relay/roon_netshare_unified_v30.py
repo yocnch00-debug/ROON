@@ -1,4 +1,5 @@
 # ON RoonLink PC Unified v3.0
+# Build trigger 1 - final integrated artifact
 #
 # Golden-path rule:
 #   - Keep the proven v2.6 native RAAT discovery/stable proxy/AUX TCP+UDP path untouched.
@@ -41,13 +42,11 @@ def legacy_probe_lan(t, flow, query):
             pass
         s.settimeout(0.30)
 
-        # Same anti-loop marker used by the original KEYLESS relay.
         try:
             base.mark_injected(query)
         except Exception:
             pass
 
-        # Query the real PC LAN exactly as the v1.3 KEYLESS reverse path did.
         s.sendto(query, (base.SOOD_GROUP, base.SOOD_PORT))
         try:
             s.sendto(query, (base.PC_BROADCAST, base.SOOD_PORT))
@@ -106,7 +105,7 @@ def legacy_open_r8_to_pc(t, sid, ip, port):
         t.send(base.OPEN_OK, sid)
         base.log("KEYLESS REVERSE TCP OPEN · R8 stream=" + str(sid) + " -> PC Core " + str(ip) + ":" + str(port))
         threading.Thread(target=base.pump_socket, args=(t, sid, s), daemon=True).start()
-        s = None  # ownership transferred to base.streams / pump_socket
+        s = None
     except Exception as e:
         try:
             if t is base.get_tunnel() and getattr(t, "alive", False):
@@ -150,13 +149,10 @@ def handle_frame_unified(t, typ, sid, payload):
         threading.Thread(target=legacy_open_r8_to_pc, args=(t, sid, ip, port), daemon=True).start()
         return
 
-    # Everything else is the exact v2.6 handler, including RAAT DATA observation,
-    # stable backend handling, AUX TCP learning and clock-UDP return traffic.
     raat.handle_frame_v26(t, typ, sid, payload)
 
 
 def main():
-    # Same two hooks installed by v2.6 main(), except frame dispatch is the unified superset.
     base.deliver_r8_response_to_pc = raat.deliver_r8_response_v24
     base.handle_frame = handle_frame_unified
 
