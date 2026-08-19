@@ -1,0 +1,150 @@
+name: Build ON Roon RAAT AUX v2.6 + R8 v2.1
+
+on:
+  push:
+    branches: [ netshare-sidecar-v1 ]
+    paths:
+      - 'pc-relay/roon_netshare_relay.py'
+      - 'pc-relay/roon_netshare_relay_v3.py'
+      - 'android-sidecar/**'
+      - 'tools/patch-pc-v25-fast-backend-recovery.py'
+      - 'tools/patch-pc-v26-raat-aux.py'
+      - 'tools/patch-pc-v26-regexfix.py'
+      - 'tools/patch-r8-v19-stable-tunnel.py'
+      - 'tools/patch-r8-v20-wlan-backend.py'
+      - 'tools/patch-r8-v21-raat-aux.py'
+      - '.github/workflows/build-raat-aux-v26.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-relay:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Apply PC v2.5 + v2.6 RAAT AUX patches
+        run: |
+          python tools/patch-pc-v25-fast-backend-recovery.py
+          python tools/patch-pc-v26-raat-aux.py
+          python tools/patch-pc-v26-regexfix.py
+      - name: RAAT AUX parser and transport checks
+        shell: bash
+        run: |
+          python -m py_compile pc-relay/roon_netshare_relay.py pc-relay/roon_netshare_relay_v3.py
+          python - <<'PY'
+          import sys,json,struct
+          sys.path.insert(0,'pc-relay')
+          import roon_netshare_relay as b
+          import roon_netshare_relay_v3 as v
+
+          assert v.VERSION=='2.6-FINAL-RAAT-AUX-TCP-UDP'
+          assert v.AUX_UDP_TO_R8==40 and v.AUX_UDP_FROM_R8==41 and v.AUX_UDP_CLOSE==42
+
+          # The native-WiFi A/B showed dynamic R8 ports. Learn only port-shaped fields,
+          # not unrelated audio numbers such as sample_rate=44100.
+          obj={'status':'Success','clock_port':40559,
+               'transport':{'stream_port':'43541','sample_rate':44100},
+               'endpoint':'192.168.50.244:43063'}
+          learned=v.extract_aux_ports_from_json(obj)
+          vals={p for _,p in learned}
+          assert 40559 in vals and 43541 in vals and 43063 in vals
+          assert ('transport.sample_rate',44100) not in learned
+
+          # Fragmented RAAT-LL RESPONSE: [len][0x80000002][rid][flags][JSON].
+          body=struct.pack('>I',98)+bytes([1])+json.dumps(
+              {'status':'Success','clock_port':40559,'audio_port':43541}).encode()
+          frame=struct.pack('>II',len(body)+8,v.RAAT_LL_RESPONSE)+body
+          rem,a=v.parse_raat_ports(b'',frame[:3])
+          rem,c=v.parse_raat_ports(rem,frame[3:11])
+          rem,d=v.parse_raat_ports(rem,frame[11:])
+          got={p for _,p in a+c+d}
+          assert rem==b'' and got=={40559,43541}
+
+          src=open('pc-relay/roon_netshare_relay_v3.py',encoding='utf-8').read()
+          assert 'RAAT AUX PORT LEARNED' in src
+          assert 'RAAT AUX TCP LISTEN' in src
+          assert 'RAAT AUX UDP LISTEN' in src
+          assert 'base.handle_frame=handle_frame_v26' in src
+          assert '2.5-FINAL-FAST-BACKEND-RECOVERY' not in src
+          print('PC v2.6 RAAT auxiliary TCP/UDP parser tests PASS')
+          PY
+      - name: Install PyInstaller
+        run: python -m pip install --disable-pip-version-check pyinstaller==6.15.0
+      - name: Build PC Relay v2.6
+        run: pyinstaller --clean --onefile --paths pc-relay --name ON-Roon-NetShare-PC-Relay-v2.6-RAAT-AUX-TCP-UDP pc-relay/roon_netshare_relay_v3.py
+      - name: Package PC
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force out-pc | Out-Null
+          Copy-Item dist/ON-Roon-NetShare-PC-Relay-v2.6-RAAT-AUX-TCP-UDP.exe out-pc/
+          (Get-FileHash out-pc/ON-Roon-NetShare-PC-Relay-v2.6-RAAT-AUX-TCP-UDP.exe -Algorithm SHA256).Hash | Out-File out-pc/SHA256.txt
+          @(
+            'Use with R8 Sidecar v2.1 RAAT AUX TCP+UDP. Keep S26 Transport v2.0 unchanged.',
+            'Normal Wi-Fi A/B proved HiBy needs a second dynamic RAAT TCP connection and clock UDP before stream/start.',
+            'The primary RAAT TCP is observed without modification; R8 response port fields are learned dynamically.',
+            'For each learned R8 port the PC opens same-number TCP and UDP proxies through the existing mux tunnel.',
+            'Expected runtime logs: RAAT AUX PORT LEARNED / RAAT AUX TCP LISTEN / RAAT AUX UDP LISTEN.'
+          ) | Set-Content out-pc/INSTALL.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ON-Roon-PC-Relay-v2.6-RAAT-AUX-TCP-UDP
+          path: out-pc/
+
+  r8-sidecar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - name: Install Android SDK 36
+        run: yes | sdkmanager --licenses >/dev/null && sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.13'
+      - name: Restore stable signing key
+        run: base64 -d android-sidecar/onroonlink-test.jks.b64 > android-sidecar/onroonlink-test.jks
+      - name: Apply R8 stable + WLAN + AUX patches
+        run: |
+          python3 tools/patch-r8-v19-stable-tunnel.py
+          python3 tools/patch-r8-v20-wlan-backend.py
+          python3 tools/patch-r8-v21-raat-aux.py
+      - name: R8 RAAT AUX architecture checks
+        run: |
+          grep -q '2.1-RAAT-AUX-TCP-UDP' android-sidecar/app/src/main/java/com/onroonlink/sidecar/BridgeService.java
+          grep -q 'versionName = "2.1-raat-aux-tcp-udp"' android-sidecar/app/build.gradle.kts
+          grep -q 'AUX_UDP_TO_R8=40' android-sidecar/app/src/main/java/com/onroonlink/sidecar/TunnelMux.java
+          grep -q 'AUX_UDP_FROM_R8=41' android-sidecar/app/src/main/java/com/onroonlink/sidecar/TunnelMux.java
+          grep -q 'ConcurrentHashMap<Integer,DatagramSocket> udpStreams' android-sidecar/app/src/main/java/com/onroonlink/sidecar/BridgeService.java
+          grep -q 'RAAT AUX UDP OPEN' android-sidecar/app/src/main/java/com/onroonlink/sidecar/BridgeService.java
+          grep -q 'WLAN-SELF' android-sidecar/app/src/main/java/com/onroonlink/sidecar/BridgeService.java
+          if grep -q 'heartbeat timeout' android-sidecar/app/src/main/java/com/onroonlink/sidecar/BridgeService.java; then echo 'False heartbeat timeout returned'; exit 1; fi
+      - name: Build R8 Sidecar v2.1
+        working-directory: android-sidecar
+        run: gradle --no-daemon :app:assembleDebug
+      - name: Verify APK
+        run: |
+          APK=android-sidecar/app/build/outputs/apk/debug/app-debug.apk
+          $ANDROID_HOME/build-tools/36.0.0/apksigner verify --verbose "$APK"
+          $ANDROID_HOME/build-tools/36.0.0/zipalign -c -P 16 -v 4 "$APK"
+      - name: Package R8
+        run: |
+          mkdir -p out-r8
+          cp android-sidecar/app/build/outputs/apk/debug/app-debug.apk out-r8/ON-Roon-NetShare-R8-Sidecar-v2.1-RAAT-AUX-TCP-UDP.apk
+          sha256sum out-r8/ON-Roon-NetShare-R8-Sidecar-v2.1-RAAT-AUX-TCP-UDP.apk > out-r8/SHA256.txt
+          printf '%s\n' \
+            'Use with PC Relay v2.6 RAAT AUX TCP+UDP. Keep S26 Transport v2.0 unchanged.' \
+            'Adds generic auxiliary UDP frames over the existing tunnel while existing OPEN_PC handles auxiliary TCP.' \
+            'UDP sockets bind to R8 wlan0/self so HiBy sees the same network-peer semantics as the v2.0 backend test.' \
+            'Expected R8 log after playback begins: RAAT AUX UDP OPEN; HiBy ADB should then show got packet on clock port.' > out-r8/INSTALL.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ON-Roon-R8-v2.1-RAAT-AUX-TCP-UDP
+          path: out-r8/
