@@ -18,7 +18,9 @@ public class GatewayService extends Service {
 
     private final ExecutorService workers=Executors.newCachedThreadPool();
     private final AtomicLong totalBytes=new AtomicLong();
+    private final AtomicLong connectionSeq=new AtomicLong();
     private volatile boolean running=true;
+    private volatile long activeSeq=0L;
     private volatile ServerSocket server;
     private volatile Socket currentR8;
     private volatile Socket currentPc;
@@ -34,7 +36,7 @@ public class GatewayService extends Service {
     @Override public IBinder onBind(Intent intent){return null;}
 
     @Override public void onDestroy(){
-        running=false;
+        running=false;activeSeq=connectionSeq.incrementAndGet();
         closeQuiet(currentR8);closeQuiet(currentPc);closeQuiet(server);
         workers.shutdownNow();
         super.onDestroy();
@@ -52,47 +54,55 @@ public class GatewayService extends Service {
                 status("PC","WAIT","R8 연결 시 일반 라우팅으로 PC Relay 접속");
                 while(running){
                     Socket r8=ss.accept();
-                    r8.setTcpNoDelay(true);
-                    r8.setKeepAlive(true);
-                    closeQuiet(currentR8);closeQuiet(currentPc);
-                    currentR8=r8;
-                    status("R8","OK",r8.getInetAddress().getHostAddress()+":"+r8.getPort());
-                    log("R8 접속 → "+r8.getRemoteSocketAddress());
-                    workers.execute(()->bridgeOne(r8));
+                    r8.setTcpNoDelay(true);r8.setKeepAlive(true);
+                    long seq=connectionSeq.incrementAndGet();activeSeq=seq;
+                    Socket oldR8=currentR8,oldPc=currentPc;
+                    currentR8=r8;currentPc=null;
+                    closeQuiet(oldR8);closeQuiet(oldPc);
+                    status("R8","OK",r8.getInetAddress().getHostAddress()+":"+r8.getPort()+" · session "+seq);
+                    log("R8 접속 #"+seq+" → "+r8.getRemoteSocketAddress());
+                    workers.execute(()->bridgeOne(seq,r8));
                 }
             }catch(Throwable t){
                 if(running)log("listener 재시작: "+shortErr(t));
             }finally{
                 closeQuiet(server);server=null;
             }
-            sleep(1200);
+            sleep(800);
         }
     }
 
-    private void bridgeOne(Socket r8){
+    private boolean isActive(long seq,Socket r8){return running&&activeSeq==seq&&currentR8==r8&&!r8.isClosed();}
+
+    private void bridgeOne(long seq,Socket r8){
         Socket pc=null;
         try{
-            PcConnection c=connectPc();
-            pc=c.socket;
+            PcConnection c=connectPc();pc=c.socket;
+            if(!isActive(seq,r8)){closeQuiet(pc);return;}
             currentPc=pc;
-            status("PC","OK",c.label);
+            status("PC","OK",c.label+" · session "+seq);
+            status("R8","OK",r8.getInetAddress().getHostAddress()+":"+r8.getPort()+" · PC 중계 연결됨");
             ((NotificationManager)getSystemService(NOTIFICATION_SERVICE)).notify(1207,notification("R8 ↔ PC Relay 연결됨"));
-            log("중계 시작 R8 ↔ "+c.label);
+            log("중계 시작 #"+seq+" R8 ↔ "+c.label);
 
             Socket pcFinal=pc;
-            Future<?> a=workers.submit(()->pump(r8,pcFinal,"R8→PC"));
-            Future<?> b=workers.submit(()->pump(pcFinal,r8,"PC→R8"));
+            Future<?> a=workers.submit(()->pump(seq,r8,pcFinal,"R8→PC"));
+            Future<?> b=workers.submit(()->pump(seq,pcFinal,r8,"PC→R8"));
             try{a.get();}catch(Throwable ignored){}
             try{b.cancel(true);}catch(Throwable ignored){}
         }catch(Throwable t){
-            status("PC","WAIT","PC Relay 연결 실패: "+shortErr(t));
-            log("PC Relay 연결 실패: "+shortErr(t));
+            if(isActive(seq,r8)){
+                status("PC","WAIT","PC Relay 연결 실패: "+shortErr(t));
+                log("PC Relay 연결 실패 #"+seq+": "+shortErr(t));
+            }
         }finally{
             closeQuiet(r8);closeQuiet(pc);
             if(currentR8==r8)currentR8=null;
             if(currentPc==pc)currentPc=null;
-            status("R8","WAIT","R8 재연결 대기");
-            status("PC","WAIT","R8 연결 시 일반 라우팅으로 PC Relay 접속");
+            if(running&&activeSeq==seq){
+                status("R8","WAIT","R8 재연결 대기");
+                status("PC","WAIT","R8 연결 시 일반 라우팅으로 PC Relay 접속");
+            }
         }
     }
 
@@ -105,25 +115,13 @@ public class GatewayService extends Service {
         if(publicPort<1||publicPort>65535)publicPort=DEFAULT_PC_PORT;
 
         IOException last=null;
+        try{return connectPlain(PC_LAN,DEFAULT_PC_PORT,"일반 라우팅 / PC LAN");}
+        catch(IOException e){last=e;log("PC Relay 일반라우팅 실패 "+PC_LAN+":"+DEFAULT_PC_PORT+": "+shortErr(e));}
 
-        // 1) Same-LAN path first. No Network.bindSocket: let Android's normal route table choose.
-        try{
-            return connectPlain(PC_LAN,DEFAULT_PC_PORT,"일반 라우팅 / PC LAN");
-        }catch(IOException e){
-            last=e;
-            log("PC Relay 일반라우팅 실패 "+PC_LAN+":"+DEFAULT_PC_PORT+": "+shortErr(e));
-        }
-
-        // 2) Public path for car/cellular use. Skip duplicate if user explicitly entered LAN target.
         if(!(PC_LAN.equals(publicHost)&&DEFAULT_PC_PORT==publicPort)){
-            try{
-                return connectPlain(publicHost,publicPort,"일반 라우팅 / PUBLIC");
-            }catch(IOException e){
-                last=e;
-                log("PC Relay 일반라우팅 실패 "+publicHost+":"+publicPort+": "+shortErr(e));
-            }
+            try{return connectPlain(publicHost,publicPort,"일반 라우팅 / PUBLIC");}
+            catch(IOException e){last=e;log("PC Relay 일반라우팅 실패 "+publicHost+":"+publicPort+": "+shortErr(e));}
         }
-
         throw new IOException("LAN/PUBLIC 일반 Socket PC Relay 경로 실패",last);
     }
 
@@ -132,41 +130,27 @@ public class GatewayService extends Service {
         try{
             log("PC Relay 일반라우팅 시도 → "+host+":"+port+" ["+via+"]");
             s.connect(new InetSocketAddress(host,port),4200);
-            s.setTcpNoDelay(true);
-            s.setKeepAlive(true);
+            s.setTcpNoDelay(true);s.setKeepAlive(true);
             String label=host+":"+port+" · "+via+" · KEY 없음";
             log("PC Relay 일반라우팅 성공 → "+label+" · local="+s.getLocalSocketAddress());
             return new PcConnection(s,label);
-        }catch(IOException e){
-            closeQuiet(s);
-            throw e;
-        }
+        }catch(IOException e){closeQuiet(s);throw e;}
     }
 
-    private void pump(Socket from,Socket to,String name){
+    private void pump(long seq,Socket from,Socket to,String name){
         byte[] buf=new byte[32768];
         try{
-            InputStream in=from.getInputStream();
-            OutputStream out=to.getOutputStream();
-            int n;
-            while(running&&(n=in.read(buf))>=0){
-                if(n==0)continue;
-                out.write(buf,0,n);
-                out.flush();
-                long total=totalBytes.addAndGet(n);
-                if((total&0x7ffff)<n)log(name+" 누적 "+total+" bytes");
+            InputStream in=from.getInputStream();OutputStream out=to.getOutputStream();int n;
+            while(running&&activeSeq==seq&&(n=in.read(buf))>=0){
+                if(n==0)continue;out.write(buf,0,n);out.flush();
+                long total=totalBytes.addAndGet(n);if((total&0x7ffff)<n)log(name+" #"+seq+" 누적 "+total+" bytes");
             }
-        }catch(Throwable t){
-            log(name+" 종료: "+shortErr(t));
-        }finally{
-            closeQuiet(from);closeQuiet(to);
-        }
+        }catch(Throwable t){if(running&&activeSeq==seq)log(name+" #"+seq+" 종료: "+shortErr(t));}
+        finally{closeQuiet(from);closeQuiet(to);}
     }
 
     private void status(String key,String state,String detail){
-        Intent i=new Intent(ACTION_STATUS).setPackage(getPackageName());
-        i.putExtra("key",key);i.putExtra("state",state);i.putExtra("detail",detail);
-        sendBroadcast(i);
+        Intent i=new Intent(ACTION_STATUS).setPackage(getPackageName());i.putExtra("key",key);i.putExtra("state",state);i.putExtra("detail",detail);sendBroadcast(i);
     }
     private void log(String s){status("LOG","",s);}
     private Notification notification(String text){return new Notification.Builder(this,CHANNEL).setContentTitle("ON Roon S26 Gateway").setContentText(text).setSmallIcon(android.R.drawable.stat_sys_upload_done).setOngoing(true).build();}
