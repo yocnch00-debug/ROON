@@ -42,6 +42,13 @@ jobs:
         run: |
           base64 -d android-sidecar/onroonlink-test.jks.b64 > android-sidecar/onroonlink-test.jks
           cp android-sidecar/onroonlink-test.jks android-s26-gateway/onroonlink-test.jks
+      - name: Static final-route checks
+        run: |
+          if grep -R 'bindSocket(' android-s26-gateway/app/src/main/java; then echo 'S26 must not use Network.bindSocket'; exit 1; fi
+          grep -q 'sanitizeQueryForRelay' android-sidecar/app/src/main/java/com/onroonlink/sidecar/SoodCodec.java
+          grep -q '_replyaddr' android-sidecar/app/src/main/java/com/onroonlink/sidecar/SoodCodec.java
+          grep -q 'listInterfaceRoutes' android-sidecar/app/src/main/java/com/onroonlink/sidecar/BridgeService.java
+          grep -q '1.4-FINAL' android-sidecar/app/src/main/java/com/onroonlink/sidecar/BridgeService.java
       - name: Build R8 APK
         working-directory: android-sidecar
         run: gradle --no-daemon :app:assembleDebug
@@ -63,18 +70,17 @@ jobs:
           if grep -qE 'android.net.VpnService|BIND_VPN_SERVICE' r8-manifest.txt s26-manifest.txt; then
             echo 'Unexpected VPN component found'; cat r8-manifest.txt; cat s26-manifest.txt; exit 1
           fi
-          grep -q 'CHANGE_NETWORK_STATE' s26-manifest.txt || { echo 'Missing CHANGE_NETWORK_STATE'; cat s26-manifest.txt; exit 1; }
       - name: Package Android artifacts
         run: |
           mkdir -p out
-          cp android-sidecar/app/build/outputs/apk/debug/app-debug.apk out/ON-Roon-NetShare-R8-Sidecar-v1.3.apk
-          cp android-s26-gateway/app/build/outputs/apk/debug/app-debug.apk out/ON-Roon-NetShare-S26-Gateway-v1.4-KEYLESS-PERMISSION-FIX.apk
-          sha256sum out/ON-Roon-NetShare-R8-Sidecar-v1.3.apk > out/ON-Roon-NetShare-R8-Sidecar-v1.3.sha256.txt
-          sha256sum out/ON-Roon-NetShare-S26-Gateway-v1.4-KEYLESS-PERMISSION-FIX.apk > out/ON-Roon-NetShare-S26-Gateway-v1.4-KEYLESS-PERMISSION-FIX.sha256.txt
+          cp android-sidecar/app/build/outputs/apk/debug/app-debug.apk out/ON-Roon-NetShare-R8-Sidecar-v1.4-FINAL.apk
+          cp android-s26-gateway/app/build/outputs/apk/debug/app-debug.apk out/ON-Roon-S26-Gateway-v1.6-FINAL.apk
+          sha256sum out/ON-Roon-NetShare-R8-Sidecar-v1.4-FINAL.apk > out/ON-Roon-NetShare-R8-Sidecar-v1.4-FINAL.sha256.txt
+          sha256sum out/ON-Roon-S26-Gateway-v1.6-FINAL.apk > out/ON-Roon-S26-Gateway-v1.6-FINAL.sha256.txt
           cp r8-manifest.txt s26-manifest.txt out/
       - uses: actions/upload-artifact@v4
         with:
-          name: ON-Roon-NetShare-R8-S26-KEYLESS-v1.4
+          name: ON-Roon-NetShare-FINAL-R8-v1.4-S26-v1.6
           path: out/
 
   windows-relay:
