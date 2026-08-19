@@ -77,11 +77,10 @@ public class BridgeService extends Service {
     }
 
     private void connectTunnel(WifiRoute route)throws Exception{
-        Socket s=new Socket();
-        route.network.bindSocket(s);
-        s.connect(new InetSocketAddress(PROXY_HOST,PROXY_PORT),5000);
+        status("PROXY","WAIT",PROXY_HOST+":"+PROXY_PORT+" 직접 TCP 연결 중");
+        Socket s=connectWithoutNetworkBind(route.address,PROXY_HOST,PROXY_PORT,5000);
         s.setSoTimeout(5000);
-        status("PROXY","OK",PROXY_HOST+":"+PROXY_PORT+" 도달");
+        status("PROXY","OK",PROXY_HOST+":"+PROXY_PORT+" TCP 도달");
 
         String request="CONNECT "+RELAY_HOST+":"+RELAY_PORT+" HTTP/1.1\r\n"+
                 "Host: "+RELAY_HOST+":"+RELAY_PORT+"\r\n"+
@@ -92,13 +91,38 @@ public class BridgeService extends Service {
         String first=header.split("\r?\n",2)[0];
         if(!first.matches("HTTP/\\d(?:\\.\\d)? 2\\d\\d.*"))throw new IOException("NetShare CONNECT 거부: "+first);
         s.setSoTimeout(0);
-        status("PROXY","OK","HTTP CONNECT 통과");
+        status("PROXY","OK","HTTP CONNECT → "+RELAY_HOST+":"+RELAY_PORT+" 통과");
 
         tunnelSocket=s;
         TunnelMux tm=new TunnelMux(s); mux=tm;
-        tm.sendText(TunnelMux.HELLO,0,"R8II|ON-SIDECAR|1");
+        tm.sendText(TunnelMux.HELLO,0,"R8II|ON-SIDECAR|1.1");
         tm.readLoop(this::onFrame);
         throw new EOFException("PC Relay 연결 종료");
+    }
+
+    private Socket connectWithoutNetworkBind(InetAddress localAddress,String host,int port,int timeout)throws IOException{
+        IOException first=null;
+        try{
+            Socket s=new Socket();
+            s.connect(new InetSocketAddress(host,port),timeout);
+            log("TCP 기본 라우팅 성공 → "+host+":"+port);
+            return s;
+        }catch(IOException e){
+            first=e;
+            log("TCP 기본 라우팅 실패: "+shortErr(e)+" · Wi-Fi 소스 바인드 재시도");
+        }
+        Socket s=new Socket();
+        try{
+            s.bind(new InetSocketAddress(localAddress,0));
+            s.connect(new InetSocketAddress(host,port),timeout);
+            log("TCP Wi-Fi 주소 바인드 성공 → "+host+":"+port);
+            return s;
+        }catch(IOException e){
+            closeQuiet(s);
+            IOException x=new IOException("proxy TCP 실패 [기본="+shortErr(first)+", source-bind="+shortErr(e)+"]");
+            x.addSuppressed(first);
+            throw x;
+        }
     }
 
     private void onFrame(int type,int sid,byte[] payload)throws Exception{
@@ -193,7 +217,7 @@ public class BridgeService extends Service {
     private void openPcToR8(int sid,String targetIp,int targetPort){
         try{
             WifiRoute route=wifi;if(route==null)throw new IOException("Wi-Fi 없음");
-            Socket s=new Socket(); route.network.bindSocket(s); s.connect(new InetSocketAddress(targetIp,targetPort),5000);
+            Socket s=connectWithoutNetworkBind(route.address,targetIp,targetPort,5000);
             streams.put(sid,s);
             TunnelMux tm=mux;if(tm==null)throw new IOException("tunnel 없음");
             tm.send(TunnelMux.OPEN_OK,sid,new byte[0]);
@@ -291,7 +315,7 @@ public class BridgeService extends Service {
     private void createChannel(){((NotificationManager)getSystemService(NOTIFICATION_SERVICE)).createNotificationChannel(new NotificationChannel(CHANNEL,"ON Roon Bridge",NotificationManager.IMPORTANCE_LOW));}
     private static void closeQuiet(Closeable c){try{if(c!=null)c.close();}catch(Throwable ignored){}}
     private static void sleep(long ms){try{Thread.sleep(ms);}catch(InterruptedException ignored){Thread.currentThread().interrupt();}}
-    private static String shortErr(Throwable t){String m=t.getMessage();return t.getClass().getSimpleName()+(m==null?"":": "+m);}
+    private static String shortErr(Throwable t){if(t==null)return"null";String m=t.getMessage();return t.getClass().getSimpleName()+(m==null?"":": "+m);}
 
     private static final class WifiRoute{
         final Network network;final NetworkInterface iface;final Inet4Address address;final InetAddress broadcast;
