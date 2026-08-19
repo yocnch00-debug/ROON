@@ -63,17 +63,18 @@ jobs:
           if grep -qE 'android.net.VpnService|BIND_VPN_SERVICE' r8-manifest.txt s26-manifest.txt; then
             echo 'Unexpected VPN component found'; cat r8-manifest.txt; cat s26-manifest.txt; exit 1
           fi
+          grep -q 'CHANGE_NETWORK_STATE' s26-manifest.txt || { echo 'Missing CHANGE_NETWORK_STATE'; cat s26-manifest.txt; exit 1; }
       - name: Package Android artifacts
         run: |
           mkdir -p out
           cp android-sidecar/app/build/outputs/apk/debug/app-debug.apk out/ON-Roon-NetShare-R8-Sidecar-v1.3.apk
-          cp android-s26-gateway/app/build/outputs/apk/debug/app-debug.apk out/ON-Roon-NetShare-S26-Gateway-v1.2-PUBLIC-SECURE.apk
+          cp android-s26-gateway/app/build/outputs/apk/debug/app-debug.apk out/ON-Roon-NetShare-S26-Gateway-v1.4-KEYLESS-PERMISSION-FIX.apk
           sha256sum out/ON-Roon-NetShare-R8-Sidecar-v1.3.apk > out/ON-Roon-NetShare-R8-Sidecar-v1.3.sha256.txt
-          sha256sum out/ON-Roon-NetShare-S26-Gateway-v1.2-PUBLIC-SECURE.apk > out/ON-Roon-NetShare-S26-Gateway-v1.2-PUBLIC-SECURE.sha256.txt
+          sha256sum out/ON-Roon-NetShare-S26-Gateway-v1.4-KEYLESS-PERMISSION-FIX.apk > out/ON-Roon-NetShare-S26-Gateway-v1.4-KEYLESS-PERMISSION-FIX.sha256.txt
           cp r8-manifest.txt s26-manifest.txt out/
       - uses: actions/upload-artifact@v4
         with:
-          name: ON-Roon-NetShare-R8-S26-PUBLIC-SECURE-v1.2
+          name: ON-Roon-NetShare-R8-S26-KEYLESS-v1.4
           path: out/
 
   windows-relay:
@@ -83,19 +84,19 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Install PyInstaller and crypto
-        run: python -m pip install --disable-pip-version-check pyinstaller==6.15.0 cryptography
+      - name: Install PyInstaller
+        run: python -m pip install --disable-pip-version-check pyinstaller==6.15.0
       - name: Syntax check
         run: python -m py_compile pc-relay/roon_netshare_relay.py
       - name: Build PC Relay
-        run: pyinstaller --clean --onefile --name ON-Roon-NetShare-PC-Relay-v1.2-PUBLIC-SECURE pc-relay/roon_netshare_relay.py
+        run: pyinstaller --clean --onefile --name ON-Roon-NetShare-PC-Relay-v1.3-KEYLESS pc-relay/roon_netshare_relay.py
       - name: Package Relay artifact
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force out | Out-Null
-          Copy-Item dist/ON-Roon-NetShare-PC-Relay-v1.2-PUBLIC-SECURE.exe out/
-          (Get-FileHash out/ON-Roon-NetShare-PC-Relay-v1.2-PUBLIC-SECURE.exe -Algorithm SHA256).Hash | Out-File out/ON-Roon-NetShare-PC-Relay-v1.2-PUBLIC-SECURE.sha256.txt
+          Copy-Item dist/ON-Roon-NetShare-PC-Relay-v1.3-KEYLESS.exe out/
+          (Get-FileHash out/ON-Roon-NetShare-PC-Relay-v1.3-KEYLESS.exe -Algorithm SHA256).Hash | Out-File out/ON-Roon-NetShare-PC-Relay-v1.3-KEYLESS.sha256.txt
       - uses: actions/upload-artifact@v4
         with:
-          name: ON-Roon-NetShare-PC-Relay-PUBLIC-SECURE-v1.2
+          name: ON-Roon-NetShare-PC-Relay-KEYLESS-v1.3
           path: out/
