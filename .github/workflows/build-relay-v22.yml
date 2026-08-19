@@ -1,4 +1,4 @@
-name: Build ON Roon PC Relay v2.2
+name: Build ON Roon PC Relay v2.3
 
 on:
   push:
@@ -26,7 +26,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Direct announce unit checks
+      - name: Native RAAT service-id unit checks
         shell: bash
         run: |
           python -m py_compile pc-relay/roon_netshare_relay.py pc-relay/roon_netshare_relay_v3.py
@@ -35,8 +35,19 @@ jobs:
           sys.path.insert(0,'pc-relay')
           import roon_netshare_relay as b
           import roon_netshare_relay_v3 as v
+
+          tid,probe=v.make_probe()
+          p=b.parse_sood(probe)
+          assert p and p[0]=='Q'
+          assert p[1]['_tid']==tid
+          assert p[1]['service_id']==v.RAAT_SERVICE
+          assert 'query_service_id' not in p[1]
+
           r=b.encode_sood('R',{
-            '_tid':'test-tid',
+            '_tid':tid,
+            '_replyaddr':'127.0.0.2',
+            '_replyport':'9003',
+            'query_service_id':'wrong-transaction-field',
             'service_id':v.RAAT_SERVICE,
             'unique_id':'device-123',
             'vendor':'HiBy',
@@ -47,40 +58,46 @@ jobs:
           built=v.build_endpoint_announcement(r,lambda prop,p:7477)
           assert built is not None
           q,props=built
-          p=b.parse_sood(q)
-          assert p and p[0]=='Q'
+          out=b.parse_sood(q)
+          assert out and out[0]=='Q'
           assert props['service_id']==v.RAAT_SERVICE
           assert props['tcp_port']=='7477'
-          # Windows must support the virtual loopback alias used as the announced endpoint source.
+          assert props['_tid']!=tid
+          assert '_replyaddr' not in props
+          assert '_replyport' not in props
+          assert 'query_service_id' not in props
+          assert props['unique_id']=='device-123'
+
           s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
           try:
               s.bind((v.VIRTUAL_SOURCE_IP,0))
           finally:
               s.close()
-          # No PC :9003 listener is allowed in this mode; otherwise it can steal our own announcement.
+
           src=open('pc-relay/roon_netshare_relay_v3.py',encoding='utf-8').read()
           assert 'pc_sood_listener' not in src
-          assert 'ROON READY ANNOUNCED TO PC ROON' in src
-          assert 'R8 ROON READY PROBE' in src
-          print('v2.2 direct Roon Ready announce tests PASS')
+          assert '2.3-FINAL-RAAT-SERVICE-ID' in src
+          assert 'R8 RAAT PROBE' in src
+          assert 'ROON READY NATIVE ANNOUNCE' in src
+          print('v2.3 native RAAT service_id probe + announcement tests PASS')
           PY
       - name: Install PyInstaller
         run: python -m pip install --disable-pip-version-check pyinstaller==6.15.0
-      - name: Build PC Relay v2.2
-        run: pyinstaller --clean --onefile --paths pc-relay --name ON-Roon-NetShare-PC-Relay-v2.2-DIRECT-ANNOUNCE pc-relay/roon_netshare_relay_v3.py
+      - name: Build PC Relay v2.3
+        run: pyinstaller --clean --onefile --paths pc-relay --name ON-Roon-NetShare-PC-Relay-v2.3-NATIVE-RAAT pc-relay/roon_netshare_relay_v3.py
       - name: Package
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force out | Out-Null
-          Copy-Item dist/ON-Roon-NetShare-PC-Relay-v2.2-DIRECT-ANNOUNCE.exe out/
-          (Get-FileHash out/ON-Roon-NetShare-PC-Relay-v2.2-DIRECT-ANNOUNCE.exe -Algorithm SHA256).Hash | Out-File out/SHA256.txt
+          Copy-Item dist/ON-Roon-NetShare-PC-Relay-v2.3-NATIVE-RAAT.exe out/
+          (Get-FileHash out/ON-Roon-NetShare-PC-Relay-v2.3-NATIVE-RAAT.exe -Algorithm SHA256).Hash | Out-File out/SHA256.txt
           @(
             'PC-only update. Keep R8 Sidecar v1.9 and S26 Transport v2.0 unchanged.',
-            'Relay does not bind UDP 9003.',
-            'It actively probes R8, converts the real HiBy RAAT response into a SOOD Q endpoint announcement, and injects it to PC Roon.',
-            'Dynamic RAAT TCP ports are still tunneled by the existing forwarder.'
+            'Probe uses service_id=5e2042ad-9bc5-4508-be92-ff68f19bdc93 exactly as the RAAT SDK requires.',
+            'Real HiBy response is converted to a fresh native RAAT QUERY announcement with dynamic tcp_port rewritten to the existing PC forwarder.',
+            'No PC UDP 9003 listener is opened by the relay.'
           ) | Set-Content out/INSTALL.txt
       - uses: actions/upload-artifact@v4
         with:
-          name: ON-Roon-PC-Relay-v2.2-DIRECT-ANNOUNCE
+          name: ON-Roon-PC-Relay-v2.3-NATIVE-RAAT
           path: out/
