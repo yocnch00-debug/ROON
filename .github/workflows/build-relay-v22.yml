@@ -1,4 +1,4 @@
-name: Build ON Roon PC Relay v2.4
+name: Build ON Roon PC Relay v2.5
 
 on:
   push:
@@ -6,12 +6,14 @@ on:
     paths:
       - 'pc-relay/roon_netshare_relay.py'
       - 'pc-relay/roon_netshare_relay_v3.py'
+      - 'tools/patch-pc-v25-fast-backend-recovery.py'
       - '.github/workflows/build-relay-v22.yml'
   pull_request:
     branches: [ main ]
     paths:
       - 'pc-relay/roon_netshare_relay.py'
       - 'pc-relay/roon_netshare_relay_v3.py'
+      - 'tools/patch-pc-v25-fast-backend-recovery.py'
       - '.github/workflows/build-relay-v22.yml'
   workflow_dispatch:
 
@@ -26,12 +28,14 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Stable RAAT proxy unit checks
+      - name: Apply v2.5 fast backend recovery patch
+        run: python tools/patch-pc-v25-fast-backend-recovery.py
+      - name: Fast RAAT recovery unit checks
         shell: bash
         run: |
           python -m py_compile pc-relay/roon_netshare_relay.py pc-relay/roon_netshare_relay_v3.py
           python - <<'PY'
-          import sys,socket
+          import sys,time
           sys.path.insert(0,'pc-relay')
           import roon_netshare_relay as b
           import roon_netshare_relay_v3 as v
@@ -42,13 +46,33 @@ jobs:
           assert p[1]['service_id']==v.RAAT_SERVICE
           assert 'query_service_id' not in p[1]
 
-          # One R8/device must keep one PC proxy even when HiBy rotates its real RAAT port.
-          p1,c1=v.ensure_stable_forwarder('device-123','tcp_port','127.0.0.1',43811)
-          p2,c2=v.ensure_stable_forwarder('device-123','tcp_port','127.0.0.1',46829)
-          assert p1==p2
-          assert c1 is True and c2 is True
-          target=v.get_target(v.stable_key('device-123','tcp_port'))
-          assert target[1]==46829 and target[3]==p1
+          # Reproduce the real failure pattern: 41809 dies, then HiBy later rotates to 40169.
+          proxy,c1=v.ensure_stable_forwarder('device-123','tcp_port','127.0.0.1',41809)
+          key=v.stable_key('device-123','tcp_port')
+          assert v.get_target(key)[1]==41809
+          assert v.invalidate_entry(key,'CI simulated ECONNREFUSED',True)
+          assert v.get_target(key) is None
+
+          # Critical v2.5 invariant: an immediate fresh response advertising the SAME failed port
+          # must NOT make us hammer that dead backend again.
+          proxy_same,c_same=v.ensure_stable_forwarder('device-123','tcp_port','127.0.0.1',41809)
+          assert proxy_same==proxy
+          assert c_same is False
+          assert v.get_target(key) is None
+
+          # A genuinely new HiBy port becomes valid immediately, while the PC proxy remains fixed.
+          proxy_new,c_new=v.ensure_stable_forwarder('device-123','tcp_port','127.0.0.1',40169)
+          assert proxy_new==proxy and c_new is True
+          target=v.get_target(key)
+          assert target and target[1]==40169 and target[3]==proxy
+
+          # Tunnel replacement invalidates all old backend knowledge, but a fresh response on the
+          # new tunnel may safely revalidate the SAME current port without changing the PC proxy.
+          assert v.invalidate_all('CI tunnel reconnect')
+          assert v.get_target(key) is None
+          proxy_re,c_re=v.ensure_stable_forwarder('device-123','tcp_port','127.0.0.1',40169)
+          assert proxy_re==proxy and c_re is True
+          assert v.get_target(key)[1]==40169
 
           r=b.encode_sood('R',{
             '_tid':tid,
@@ -70,30 +94,34 @@ jobs:
           assert '_replyaddr' not in props and '_replyport' not in props
 
           src=open('pc-relay/roon_netshare_relay_v3.py',encoding='utf-8').read()
-          assert '2.4-FINAL-STABLE-RAAT-PROXY' in src
-          assert 'RAAT TARGET ROTATED' in src
-          assert 'RAAT BACKEND OPEN RETRY' in src
-          assert 'stableProxyPorts' in src
-          print('v2.4 stable RAAT proxy rotation/retry tests PASS')
+          assert '2.5-FINAL-FAST-BACKEND-RECOVERY' in src
+          assert 'RAAT BACKEND INVALIDATED' in src
+          assert 'RAAT FAST RECOVERY' in src
+          assert 'STALE_SAME_PORT_BLOCK' in src
+          assert 'RECOVERY_PROBE_INTERVAL=0.30' in src
+          assert 'for attempt in range(1,4)' not in src
+          print('v2.5 stale backend invalidation / 41809->40169 recovery tests PASS')
           PY
       - name: Install PyInstaller
         run: python -m pip install --disable-pip-version-check pyinstaller==6.15.0
-      - name: Build PC Relay v2.4
-        run: pyinstaller --clean --onefile --paths pc-relay --name ON-Roon-NetShare-PC-Relay-v2.4-STABLE-RAAT pc-relay/roon_netshare_relay_v3.py
+      - name: Build PC Relay v2.5
+        run: pyinstaller --clean --onefile --paths pc-relay --name ON-Roon-NetShare-PC-Relay-v2.5-FAST-RAAT-RECOVERY pc-relay/roon_netshare_relay_v3.py
       - name: Package
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force out | Out-Null
-          Copy-Item dist/ON-Roon-NetShare-PC-Relay-v2.4-STABLE-RAAT.exe out/
-          (Get-FileHash out/ON-Roon-NetShare-PC-Relay-v2.4-STABLE-RAAT.exe -Algorithm SHA256).Hash | Out-File out/SHA256.txt
+          Copy-Item dist/ON-Roon-NetShare-PC-Relay-v2.5-FAST-RAAT-RECOVERY.exe out/
+          (Get-FileHash out/ON-Roon-NetShare-PC-Relay-v2.5-FAST-RAAT-RECOVERY.exe -Algorithm SHA256).Hash | Out-File out/SHA256.txt
           @(
             'PC-only update. Keep R8 Sidecar v1.9 and S26 Transport v2.0 unchanged.',
-            'PC proxy port is stable per Roon Ready endpoint even when HiBy rotates its real dynamic RAAT tcp_port.',
-            'Backend target is atomically updated from each successful native RAAT probe.',
-            'On stale-target OPEN_ERR, the PC Roon socket is kept open while an immediate probe refreshes the backend and retries.',
-            'Repeated unchanged native announcements are rate-limited.'
+            'Fixes the observed stale-backend loop where 41809/46829 kept being retried after HiBy had closed the port.',
+            'One OPEN_ERR invalidates and quarantines that exact backend immediately.',
+            'The dead target is never retried merely because a retry timer elapsed.',
+            'Recovery probes accelerate from 4.0s to 0.30s while a backend is invalid.',
+            'A new HiBy tcp_port is adopted immediately while the PC-facing proxy port stays fixed.',
+            'Any R8 tunnel loss/replacement invalidates backend knowledge until a fresh RAAT response arrives.'
           ) | Set-Content out/INSTALL.txt
       - uses: actions/upload-artifact@v4
         with:
-          name: ON-Roon-PC-Relay-v2.4-STABLE-RAAT
+          name: ON-Roon-PC-Relay-v2.5-FAST-RAAT-RECOVERY
           path: out/
