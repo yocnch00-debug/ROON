@@ -8,8 +8,8 @@ android {
         applicationId = "com.onroonlink.s26gateway"
         minSdk = 26
         targetSdk = 36
-        versionCode = 2
-        versionName = "1.1-phone-vpn-auto"
+        versionCode = 3
+        versionName = "1.2-public-relay"
     }
 
     signingConfigs {
