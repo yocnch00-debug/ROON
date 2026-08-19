@@ -19,7 +19,6 @@ public class MainActivity extends Activity {
     private TextView logView;
     private EditText pcHost;
     private EditText pcPort;
-    private EditText relayKey;
     private final SimpleDateFormat tf = new SimpleDateFormat("HH:mm:ss", Locale.KOREA);
 
     private final BroadcastReceiver receiver = new BroadcastReceiver() {
@@ -49,7 +48,7 @@ public class MainActivity extends Activity {
         ScrollView sv=new ScrollView(this);
         LinearLayout root=new LinearLayout(this);root.setOrientation(LinearLayout.VERTICAL);root.setPadding(dp(20),dp(24),dp(20),dp(30));sv.addView(root);
         TextView title=new TextView(this);title.setText("ON Roon S26 Gateway");title.setTextSize(24);title.setTextColor(Color.BLACK);title.setTypeface(null,1);root.addView(title);
-        TextView sub=new TextView(this);sub.setText("기존 PHONE RoonLink/NetShare 그대로 · PC Relay 물리인터넷 직결 · AES-GCM · 자체 VPN 없음");sub.setTextSize(14);sub.setPadding(0,dp(4),0,dp(14));root.addView(sub);
+        TextView sub=new TextView(this);sub.setText("기존 PHONE RoonLink/NetShare 그대로 · PC Relay 물리인터넷 직결 · KEY 없음 · 자체 VPN 없음");sub.setTextSize(14);sub.setPadding(0,dp(4),0,dp(14));root.addView(sub);
 
         SharedPreferences sp=getSharedPreferences("gateway",MODE_PRIVATE);
         TextView hostLabel=new TextView(this);hostLabel.setText("PC Relay 외부 주소 / 포트");hostLabel.setTextSize(13);hostLabel.setTypeface(null,1);root.addView(hostLabel);
@@ -58,11 +57,8 @@ public class MainActivity extends Activity {
         pcPort=new EditText(this);pcPort.setSingleLine(true);pcPort.setText(String.valueOf(sp.getInt("pc_port",DEFAULT_PC_PORT)));pcPort.setTextSize(15);pcPort.setInputType(InputType.TYPE_CLASS_NUMBER);
         addrRow.addView(pcHost,new LinearLayout.LayoutParams(0,dp(48),3f));addrRow.addView(pcPort,new LinearLayout.LayoutParams(0,dp(48),1.25f));root.addView(addrRow);
 
-        TextView keyLabel=new TextView(this);keyLabel.setText("PC Relay KEY · PC 새 Relay 창에 표시되는 32자리");keyLabel.setTextSize(13);keyLabel.setTypeface(null,1);root.addView(keyLabel);
-        relayKey=new EditText(this);relayKey.setSingleLine(true);relayKey.setText(sp.getString("relay_key",""));relayKey.setHint("예: 32자리 KEY 붙여넣기");relayKey.setTextSize(15);relayKey.setInputType(InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);root.addView(relayKey,new LinearLayout.LayoutParams(-1,dp(48)));
-
         addRow(root,"APP","앱 구조");addRow(root,"LISTEN","R8 수신");addRow(root,"PC","PC Relay 경로");addRow(root,"R8","R8 연결");
-        Button restart=new Button(this);restart.setText("설정 저장 + 게이트웨이 다시 시작");restart.setOnClickListener(v->{saveSettings();stopService(new Intent(this,GatewayService.class));new Handler(Looper.getMainLooper()).postDelayed(this::startGateway,500);});root.addView(restart);
+        Button restart=new Button(this);restart.setText("주소 저장 + 게이트웨이 다시 시작");restart.setOnClickListener(v->{saveSettings();stopService(new Intent(this,GatewayService.class));new Handler(Looper.getMainLooper()).postDelayed(this::startGateway,500);});root.addView(restart);
         TextView lh=new TextView(this);lh.setText("실시간 로그");lh.setTextSize(16);lh.setTypeface(null,1);lh.setPadding(0,dp(18),0,dp(6));root.addView(lh);
         logView=new TextView(this);logView.setTextSize(12);logView.setTextIsSelectable(true);logView.setPadding(dp(10),dp(10),dp(10),dp(10));logView.setBackgroundColor(Color.rgb(245,245,245));root.addView(logView,new LinearLayout.LayoutParams(-1,dp(300)));
         return sv;
@@ -71,9 +67,8 @@ public class MainActivity extends Activity {
     private void saveSettings(){
         String host=pcHost==null?DEFAULT_PC_HOST:pcHost.getText().toString().trim();if(host.isEmpty())host=DEFAULT_PC_HOST;
         int port=DEFAULT_PC_PORT;try{port=Integer.parseInt(pcPort.getText().toString().trim());}catch(Throwable ignored){}if(port<1||port>65535)port=DEFAULT_PC_PORT;
-        String key=relayKey==null?"":relayKey.getText().toString().trim();
-        getSharedPreferences("gateway",MODE_PRIVATE).edit().putString("pc_host",host).putInt("pc_port",port).putString("relay_key",key).apply();
-        if(pcHost!=null)pcHost.setText(host);if(pcPort!=null)pcPort.setText(String.valueOf(port));if(relayKey!=null)relayKey.setText(key);
+        getSharedPreferences("gateway",MODE_PRIVATE).edit().putString("pc_host",host).putInt("pc_port",port).remove("relay_key").apply();
+        if(pcHost!=null)pcHost.setText(host);if(pcPort!=null)pcPort.setText(String.valueOf(port));
     }
 
     private void addRow(LinearLayout root,String key,String name){TextView v=new TextView(this);v.setText("○  "+name+"\n    대기");v.setTextSize(16);v.setPadding(dp(4),dp(9),dp(4),dp(9));root.addView(v);rows.put(key,v);}
