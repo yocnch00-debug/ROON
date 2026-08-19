@@ -5,12 +5,14 @@ on:
     branches: [ main, netshare-sidecar-v1 ]
     paths:
       - 'android-sidecar/**'
+      - 'android-s26-gateway/**'
       - 'pc-relay/**'
       - '.github/workflows/build-sidecar.yml'
   pull_request:
     branches: [ main ]
     paths:
       - 'android-sidecar/**'
+      - 'android-s26-gateway/**'
       - 'pc-relay/**'
       - '.github/workflows/build-sidecar.yml'
   workflow_dispatch:
@@ -36,31 +38,42 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.13'
-      - name: Restore stable signing key
-        working-directory: android-sidecar
-        run: base64 -d onroonlink-test.jks.b64 > onroonlink-test.jks
-      - name: Build APK
+      - name: Restore stable signing keys
+        run: |
+          base64 -d android-sidecar/onroonlink-test.jks.b64 > android-sidecar/onroonlink-test.jks
+          cp android-sidecar/onroonlink-test.jks android-s26-gateway/onroonlink-test.jks
+      - name: Build R8 APK
         working-directory: android-sidecar
         run: gradle --no-daemon :app:assembleDebug
-      - name: Verify APK signature
-        run: $ANDROID_HOME/build-tools/36.0.0/apksigner verify --verbose android-sidecar/app/build/outputs/apk/debug/app-debug.apk
+      - name: Build S26 Gateway APK
+        working-directory: android-s26-gateway
+        run: gradle --no-daemon :app:assembleDebug
+      - name: Verify APK signatures
+        run: |
+          $ANDROID_HOME/build-tools/36.0.0/apksigner verify --verbose android-sidecar/app/build/outputs/apk/debug/app-debug.apk
+          $ANDROID_HOME/build-tools/36.0.0/apksigner verify --verbose android-s26-gateway/app/build/outputs/apk/debug/app-debug.apk
       - name: Verify APK alignment
-        run: $ANDROID_HOME/build-tools/36.0.0/zipalign -c -P 16 -v 4 android-sidecar/app/build/outputs/apk/debug/app-debug.apk
+        run: |
+          $ANDROID_HOME/build-tools/36.0.0/zipalign -c -P 16 -v 4 android-sidecar/app/build/outputs/apk/debug/app-debug.apk
+          $ANDROID_HOME/build-tools/36.0.0/zipalign -c -P 16 -v 4 android-s26-gateway/app/build/outputs/apk/debug/app-debug.apk
       - name: Verify no VpnService or VPN permission
         run: |
-          $ANDROID_HOME/build-tools/36.0.0/aapt dump xmltree android-sidecar/app/build/outputs/apk/debug/app-debug.apk AndroidManifest.xml > manifest.txt
-          if grep -qE 'android.net.VpnService|BIND_VPN_SERVICE' manifest.txt; then
-            echo 'Unexpected VPN component found'; cat manifest.txt; exit 1
+          $ANDROID_HOME/build-tools/36.0.0/aapt dump xmltree android-sidecar/app/build/outputs/apk/debug/app-debug.apk AndroidManifest.xml > r8-manifest.txt
+          $ANDROID_HOME/build-tools/36.0.0/aapt dump xmltree android-s26-gateway/app/build/outputs/apk/debug/app-debug.apk AndroidManifest.xml > s26-manifest.txt
+          if grep -qE 'android.net.VpnService|BIND_VPN_SERVICE' r8-manifest.txt s26-manifest.txt; then
+            echo 'Unexpected VPN component found'; cat r8-manifest.txt; cat s26-manifest.txt; exit 1
           fi
-      - name: Package Android artifact
+      - name: Package Android artifacts
         run: |
           mkdir -p out
-          cp android-sidecar/app/build/outputs/apk/debug/app-debug.apk out/ON-Roon-NetShare-Sidecar-v1.apk
-          sha256sum out/ON-Roon-NetShare-Sidecar-v1.apk > out/ON-Roon-NetShare-Sidecar-v1.sha256.txt
-          cp manifest.txt out/android-manifest-check.txt
+          cp android-sidecar/app/build/outputs/apk/debug/app-debug.apk out/ON-Roon-NetShare-R8-Sidecar-v1.3.apk
+          cp android-s26-gateway/app/build/outputs/apk/debug/app-debug.apk out/ON-Roon-NetShare-S26-Gateway-v1.apk
+          sha256sum out/ON-Roon-NetShare-R8-Sidecar-v1.3.apk > out/ON-Roon-NetShare-R8-Sidecar-v1.3.sha256.txt
+          sha256sum out/ON-Roon-NetShare-S26-Gateway-v1.apk > out/ON-Roon-NetShare-S26-Gateway-v1.sha256.txt
+          cp r8-manifest.txt s26-manifest.txt out/
       - uses: actions/upload-artifact@v4
         with:
-          name: ON-Roon-NetShare-Sidecar-v1-APK
+          name: ON-Roon-NetShare-R8-S26-v1.3
           path: out/
 
   windows-relay:
