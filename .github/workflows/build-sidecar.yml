@@ -9,6 +9,14 @@ on:
       - 'pc-relay/roon_netshare_relay.py'
       - 'pc-relay/roon_netshare_relay_v2.py'
       - '.github/workflows/build-sidecar.yml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'android-sidecar/**'
+      - 'android-s26-gateway/**'
+      - 'pc-relay/roon_netshare_relay.py'
+      - 'pc-relay/roon_netshare_relay_v2.py'
+      - '.github/workflows/build-sidecar.yml'
   workflow_dispatch:
 
 permissions:
@@ -64,14 +72,7 @@ jobs:
           cp android-sidecar/app/build/outputs/apk/debug/app-debug.apk out/ON-Roon-NetShare-R8-Sidecar-v1.8-STATEFUL-ENDPOINT.apk
           cp android-s26-gateway/app/build/outputs/apk/debug/app-debug.apk out/ON-Roon-S26-Transport-v2.0-FINAL.apk
           sha256sum out/* > out/SHA256SUMS.txt
-          cat > out/INSTALL.txt <<'EOF'
-          FINAL 2.0 architecture
-          1) PC Relay v2.0 runs beside Roon Server.
-          2) S26 Transport does TCP only: R8:51921 <-> PC:51920. It never touches UDP 9003/SOOD.
-          3) R8 Sidecar receives PC Roon SOOD over the persistent tunnel, queries local HiBy Roon Ready, and returns the response.
-          4) PC Relay rewrites dynamic Roon Ready TCP ports to local proxy ports and tunnels RAAT TCP back to R8.
-          Existing PHONE RoonLink and NetShare remain unchanged.
-          EOF
+          printf '%s\n' 'FINAL 2.0 architecture' 'PC Relay handles PC-local Roon discovery.' 'S26 is TCP transport only.' 'R8 Sidecar queries local HiBy Roon Ready and tunnels dynamic RAAT TCP.' 'Existing PHONE RoonLink and NetShare remain unchanged.' > out/INSTALL.txt
       - uses: actions/upload-artifact@v4
         with:
           name: ON-Roon-FINAL-v2-Android
