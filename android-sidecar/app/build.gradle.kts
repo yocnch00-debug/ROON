@@ -8,8 +8,8 @@ android {
         applicationId = "com.onroonlink.sidecar"
         minSdk = 26
         targetSdk = 36
-        versionCode = 3
-        versionName = "1.3-s26-gateway"
+        versionCode = 4
+        versionName = "1.4-final-sood-multi-iface"
     }
 
     signingConfigs {
