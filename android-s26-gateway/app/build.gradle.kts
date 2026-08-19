@@ -8,8 +8,8 @@ android {
         applicationId = "com.onroonlink.s26gateway"
         minSdk = 26
         targetSdk = 36
-        versionCode = 4
-        versionName = "1.3-physical-bind-permission-fix"
+        versionCode = 5
+        versionName = "1.4-keyless-physical-bind-fix"
     }
 
     signingConfigs {
