@@ -4,12 +4,14 @@ on:
   push:
     branches: [ main, netshare-sidecar-v1 ]
     paths:
-      - 'sidecar-src.zip'
+      - 'android-sidecar/**'
+      - 'pc-relay/**'
       - '.github/workflows/build-sidecar.yml'
   pull_request:
     branches: [ main ]
     paths:
-      - 'sidecar-src.zip'
+      - 'android-sidecar/**'
+      - 'pc-relay/**'
       - '.github/workflows/build-sidecar.yml'
   workflow_dispatch:
 
@@ -21,8 +23,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Extract source
-        run: mkdir sidecar-work && unzip -q sidecar-src.zip -d sidecar-work
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
@@ -30,30 +30,32 @@ jobs:
           java-version: '17'
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
-      - name: Install SDK
+      - name: Install Android SDK 36
         run: yes | sdkmanager --licenses >/dev/null && sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
       - name: Set up Gradle 8.13
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.13'
-      - name: Restore stable test signing key
-        working-directory: sidecar-work/android-sidecar
+      - name: Restore stable signing key
+        working-directory: android-sidecar
         run: base64 -d onroonlink-test.jks.b64 > onroonlink-test.jks
       - name: Build APK
-        working-directory: sidecar-work/android-sidecar
+        working-directory: android-sidecar
         run: gradle --no-daemon :app:assembleDebug
       - name: Verify APK signature
-        run: $ANDROID_HOME/build-tools/36.0.0/apksigner verify --verbose sidecar-work/android-sidecar/app/build/outputs/apk/debug/app-debug.apk
+        run: $ANDROID_HOME/build-tools/36.0.0/apksigner verify --verbose android-sidecar/app/build/outputs/apk/debug/app-debug.apk
       - name: Verify APK alignment
-        run: $ANDROID_HOME/build-tools/36.0.0/zipalign -c -P 16 -v 4 sidecar-work/android-sidecar/app/build/outputs/apk/debug/app-debug.apk
-      - name: Verify manifest has no VpnService
+        run: $ANDROID_HOME/build-tools/36.0.0/zipalign -c -P 16 -v 4 android-sidecar/app/build/outputs/apk/debug/app-debug.apk
+      - name: Verify no VpnService or VPN permission
         run: |
-          $ANDROID_HOME/build-tools/36.0.0/aapt dump xmltree sidecar-work/android-sidecar/app/build/outputs/apk/debug/app-debug.apk AndroidManifest.xml > manifest.txt
-          if grep -q 'android.net.VpnService\|BIND_VPN_SERVICE' manifest.txt; then echo 'Unexpected VPN service'; exit 1; fi
+          $ANDROID_HOME/build-tools/36.0.0/aapt dump xmltree android-sidecar/app/build/outputs/apk/debug/app-debug.apk AndroidManifest.xml > manifest.txt
+          if grep -qE 'android.net.VpnService|BIND_VPN_SERVICE' manifest.txt; then
+            echo 'Unexpected VPN component found'; cat manifest.txt; exit 1
+          fi
       - name: Package Android artifact
         run: |
           mkdir -p out
-          cp sidecar-work/android-sidecar/app/build/outputs/apk/debug/app-debug.apk out/ON-Roon-NetShare-Sidecar-v1.apk
+          cp android-sidecar/app/build/outputs/apk/debug/app-debug.apk out/ON-Roon-NetShare-Sidecar-v1.apk
           sha256sum out/ON-Roon-NetShare-Sidecar-v1.apk > out/ON-Roon-NetShare-Sidecar-v1.sha256.txt
           cp manifest.txt out/android-manifest-check.txt
       - uses: actions/upload-artifact@v4
@@ -65,18 +67,15 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Extract source
-        shell: pwsh
-        run: Expand-Archive sidecar-src.zip sidecar-work
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
       - name: Install PyInstaller
         run: python -m pip install --disable-pip-version-check pyinstaller==6.15.0
       - name: Syntax check
-        run: python -m py_compile sidecar-work/pc-relay/roon_netshare_relay.py
+        run: python -m py_compile pc-relay/roon_netshare_relay.py
       - name: Build PC Relay
-        run: pyinstaller --clean --onefile --name ON-Roon-NetShare-PC-Relay-v1 sidecar-work/pc-relay/roon_netshare_relay.py
+        run: pyinstaller --clean --onefile --name ON-Roon-NetShare-PC-Relay-v1 pc-relay/roon_netshare_relay.py
       - name: Package Relay artifact
         shell: pwsh
         run: |
