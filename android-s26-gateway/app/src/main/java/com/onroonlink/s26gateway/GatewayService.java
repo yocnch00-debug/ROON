@@ -2,11 +2,9 @@ package com.onroonlink.s26gateway;
 
 import android.app.*;
 import android.content.*;
-import android.net.*;
 import android.os.*;
 import java.io.*;
 import java.net.*;
-import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -43,7 +41,7 @@ public class GatewayService extends Service {
     }
 
     private void serverLoop(){
-        status("APP","OK","R8 로컬 수신 · PC 물리인터넷 직결 · KEY/AES 없음 · PHONE VPN 미변경");
+        status("APP","OK","R8 로컬 수신 · 일반 Socket 라우팅 · Network.bindSocket 없음 · KEY/AES 없음 · PHONE VPN 미변경");
         while(running){
             try{
                 ServerSocket ss=new ServerSocket();
@@ -51,7 +49,7 @@ public class GatewayService extends Service {
                 ss.bind(new InetSocketAddress("0.0.0.0",LISTEN_PORT));
                 server=ss;
                 status("LISTEN","OK","0.0.0.0:"+LISTEN_PORT+" · R8 대기");
-                status("PC","WAIT","R8 연결 시 물리 인터넷으로 PC Relay 직결");
+                status("PC","WAIT","R8 연결 시 일반 라우팅으로 PC Relay 접속");
                 while(running){
                     Socket r8=ss.accept();
                     r8.setTcpNoDelay(true);
@@ -94,7 +92,7 @@ public class GatewayService extends Service {
             if(currentR8==r8)currentR8=null;
             if(currentPc==pc)currentPc=null;
             status("R8","WAIT","R8 재연결 대기");
-            status("PC","WAIT","R8 연결 시 물리 인터넷으로 PC Relay 직결");
+            status("PC","WAIT","R8 연결 시 일반 라우팅으로 PC Relay 접속");
         }
     }
 
@@ -106,51 +104,43 @@ public class GatewayService extends Service {
         int publicPort=sp.getInt("pc_port",DEFAULT_PC_PORT);
         if(publicPort<1||publicPort>65535)publicPort=DEFAULT_PC_PORT;
 
-        ArrayList<Candidate> candidates=new ArrayList<>();
-        ConnectivityManager cm=(ConnectivityManager)getSystemService(CONNECTIVITY_SERVICE);
-        if(cm!=null){
-            try{
-                for(Network n:cm.getAllNetworks()){
-                    NetworkCapabilities caps=cm.getNetworkCapabilities(n);
-                    if(caps==null)continue;
-                    if(caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN))continue;
-                    if(!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET))continue;
+        IOException last=null;
 
-                    LinkProperties lp=cm.getLinkProperties(n);
-                    String iface=lp==null?"?":String.valueOf(lp.getInterfaceName());
-                    String via=transportName(caps)+" "+iface;
-                    boolean pcLan=hasPcLanAddress(lp);
-                    boolean validated=caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED);
-                    log("물리 인터넷 발견 → "+via+" · validated="+validated+(pcLan?" · PC LAN 동일대역":""));
-
-                    if(pcLan)addCandidate(candidates,new Candidate(n,PC_LAN,DEFAULT_PC_PORT,via+" / LAN"));
-                    addCandidate(candidates,new Candidate(n,publicHost,publicPort,via+" / PUBLIC"));
-                }
-            }catch(Throwable t){
-                log("물리 인터넷 탐색 오류: "+shortErr(t));
-            }
+        // 1) Same-LAN path first. No Network.bindSocket: let Android's normal route table choose.
+        try{
+            return connectPlain(PC_LAN,DEFAULT_PC_PORT,"일반 라우팅 / PC LAN");
+        }catch(IOException e){
+            last=e;
+            log("PC Relay 일반라우팅 실패 "+PC_LAN+":"+DEFAULT_PC_PORT+": "+shortErr(e));
         }
 
-        if(candidates.isEmpty())throw new IOException("VPN 아닌 물리 인터넷 Network를 찾지 못함");
-        IOException last=null;
-        for(Candidate c:candidates){
-            Socket s=new Socket();
+        // 2) Public path for car/cellular use. Skip duplicate if user explicitly entered LAN target.
+        if(!(PC_LAN.equals(publicHost)&&DEFAULT_PC_PORT==publicPort)){
             try{
-                c.network.bindSocket(s);
-                log("PC Relay 직결 시도 → "+c.host+":"+c.port+" ["+c.via+"]");
-                s.connect(new InetSocketAddress(c.host,c.port),4200);
-                s.setTcpNoDelay(true);
-                s.setKeepAlive(true);
-                String label=c.host+":"+c.port+" · "+c.via+" · KEY 없음";
-                log("PC Relay 직결 성공 → "+label+" · local="+s.getLocalSocketAddress());
-                return new PcConnection(s,label);
+                return connectPlain(publicHost,publicPort,"일반 라우팅 / PUBLIC");
             }catch(IOException e){
                 last=e;
-                closeQuiet(s);
-                log("PC Relay 직결 실패 "+c.host+":"+c.port+" ["+c.via+"]: "+shortErr(e));
+                log("PC Relay 일반라우팅 실패 "+publicHost+":"+publicPort+": "+shortErr(e));
             }
         }
-        throw new IOException("모든 물리 인터넷 PC Relay 경로 실패",last);
+
+        throw new IOException("LAN/PUBLIC 일반 Socket PC Relay 경로 실패",last);
+    }
+
+    private PcConnection connectPlain(String host,int port,String via)throws IOException{
+        Socket s=new Socket();
+        try{
+            log("PC Relay 일반라우팅 시도 → "+host+":"+port+" ["+via+"]");
+            s.connect(new InetSocketAddress(host,port),4200);
+            s.setTcpNoDelay(true);
+            s.setKeepAlive(true);
+            String label=host+":"+port+" · "+via+" · KEY 없음";
+            log("PC Relay 일반라우팅 성공 → "+label+" · local="+s.getLocalSocketAddress());
+            return new PcConnection(s,label);
+        }catch(IOException e){
+            closeQuiet(s);
+            throw e;
+        }
     }
 
     private void pump(Socket from,Socket to,String name){
@@ -173,32 +163,6 @@ public class GatewayService extends Service {
         }
     }
 
-    private static void addCandidate(ArrayList<Candidate> list,Candidate c){
-        for(Candidate x:list)if(x.network.equals(c.network)&&x.host.equals(c.host)&&x.port==c.port)return;
-        list.add(c);
-    }
-
-    private static boolean hasPcLanAddress(LinkProperties lp){
-        if(lp==null)return false;
-        try{
-            for(LinkAddress la:lp.getLinkAddresses()){
-                InetAddress a=la.getAddress();
-                if(a instanceof Inet4Address){
-                    String ip=a.getHostAddress();
-                    if(ip!=null&&ip.startsWith("192.168.50."))return true;
-                }
-            }
-        }catch(Throwable ignored){}
-        return false;
-    }
-
-    private static String transportName(NetworkCapabilities c){
-        if(c.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR))return"CELLULAR";
-        if(c.hasTransport(NetworkCapabilities.TRANSPORT_WIFI))return"WIFI";
-        if(c.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET))return"ETHERNET";
-        return"PHYSICAL";
-    }
-
     private void status(String key,String state,String detail){
         Intent i=new Intent(ACTION_STATUS).setPackage(getPackageName());
         i.putExtra("key",key);i.putExtra("state",state);i.putExtra("detail",detail);
@@ -211,10 +175,6 @@ public class GatewayService extends Service {
     private static void sleep(long ms){try{Thread.sleep(ms);}catch(InterruptedException ignored){Thread.currentThread().interrupt();}}
     private static String shortErr(Throwable t){if(t==null)return"null";String m=t.getMessage();return t.getClass().getSimpleName()+(m==null?"":": "+m);}
 
-    private static final class Candidate{
-        final Network network;final String host;final int port;final String via;
-        Candidate(Network n,String h,int p,String v){network=n;host=h;port=p;via=v;}
-    }
     private static final class PcConnection{
         final Socket socket;final String label;
         PcConnection(Socket s,String l){socket=s;label=l;}
