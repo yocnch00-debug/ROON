@@ -3,7 +3,7 @@ name: Build ON Roon RAAT AUX v2.6 + R8 v2.1
 on:
   push:
     branches: [ netshare-sidecar-v1 ]
-    paths:
+    paths: &aux_paths
       - 'pc-relay/roon_netshare_relay.py'
       - 'pc-relay/roon_netshare_relay_v3.py'
       - 'android-sidecar/**'
@@ -14,6 +14,9 @@ on:
       - 'tools/patch-r8-v20-wlan-backend.py'
       - 'tools/patch-r8-v21-raat-aux.py'
       - '.github/workflows/build-raat-aux-v26.yml'
+  pull_request:
+    branches: [ main ]
+    paths: *aux_paths
   workflow_dispatch:
 
 permissions:
@@ -45,8 +48,6 @@ jobs:
           assert v.VERSION=='2.6-FINAL-RAAT-AUX-TCP-UDP'
           assert v.AUX_UDP_TO_R8==40 and v.AUX_UDP_FROM_R8==41 and v.AUX_UDP_CLOSE==42
 
-          # The native-WiFi A/B showed dynamic R8 ports. Learn only port-shaped fields,
-          # not unrelated audio numbers such as sample_rate=44100.
           obj={'status':'Success','clock_port':40559,
                'transport':{'stream_port':'43541','sample_rate':44100},
                'endpoint':'192.168.50.244:43063'}
@@ -55,7 +56,6 @@ jobs:
           assert 40559 in vals and 43541 in vals and 43063 in vals
           assert ('transport.sample_rate',44100) not in learned
 
-          # Fragmented RAAT-LL RESPONSE: [len][0x80000002][rid][flags][JSON].
           body=struct.pack('>I',98)+bytes([1])+json.dumps(
               {'status':'Success','clock_port':40559,'audio_port':43541}).encode()
           frame=struct.pack('>II',len(body)+8,v.RAAT_LL_RESPONSE)+body
