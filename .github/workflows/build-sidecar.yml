@@ -48,7 +48,8 @@ jobs:
           grep -q 'sanitizeQueryForRelay' android-sidecar/app/src/main/java/com/onroonlink/sidecar/SoodCodec.java
           grep -q '_replyaddr' android-sidecar/app/src/main/java/com/onroonlink/sidecar/SoodCodec.java
           grep -q 'listInterfaceRoutes' android-sidecar/app/src/main/java/com/onroonlink/sidecar/BridgeService.java
-          grep -q '1.4-FINAL' android-sidecar/app/src/main/java/com/onroonlink/sidecar/BridgeService.java
+          grep -q 'stopService' android-sidecar/app/src/main/java/com/onroonlink/sidecar/MainActivity.java && { echo 'Destructive restart still present'; exit 1; } || true
+          grep -q 'v1.5 RECONNECT FIX' android-sidecar/app/src/main/java/com/onroonlink/sidecar/MainActivity.java
       - name: Build R8 APK
         working-directory: android-sidecar
         run: gradle --no-daemon :app:assembleDebug
@@ -73,14 +74,14 @@ jobs:
       - name: Package Android artifacts
         run: |
           mkdir -p out
-          cp android-sidecar/app/build/outputs/apk/debug/app-debug.apk out/ON-Roon-NetShare-R8-Sidecar-v1.4-FINAL.apk
+          cp android-sidecar/app/build/outputs/apk/debug/app-debug.apk out/ON-Roon-NetShare-R8-Sidecar-v1.5-RECONNECT-FIX.apk
           cp android-s26-gateway/app/build/outputs/apk/debug/app-debug.apk out/ON-Roon-S26-Gateway-v1.6-FINAL.apk
-          sha256sum out/ON-Roon-NetShare-R8-Sidecar-v1.4-FINAL.apk > out/ON-Roon-NetShare-R8-Sidecar-v1.4-FINAL.sha256.txt
+          sha256sum out/ON-Roon-NetShare-R8-Sidecar-v1.5-RECONNECT-FIX.apk > out/ON-Roon-NetShare-R8-Sidecar-v1.5-RECONNECT-FIX.sha256.txt
           sha256sum out/ON-Roon-S26-Gateway-v1.6-FINAL.apk > out/ON-Roon-S26-Gateway-v1.6-FINAL.sha256.txt
           cp r8-manifest.txt s26-manifest.txt out/
       - uses: actions/upload-artifact@v4
         with:
-          name: ON-Roon-NetShare-FINAL-R8-v1.4-S26-v1.6
+          name: ON-Roon-NetShare-R8-v1.5-RECONNECT-FIX-S26-v1.6
           path: out/
 
   windows-relay:
