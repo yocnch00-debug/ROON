@@ -7,6 +7,7 @@ on:
       - 'android-sidecar/**'
       - 'android-s26-gateway/**'
       - 'pc-relay/**'
+      - 'tools/**'
       - '.github/workflows/build-sidecar.yml'
   pull_request:
     branches: [ main ]
@@ -14,6 +15,7 @@ on:
       - 'android-sidecar/**'
       - 'android-s26-gateway/**'
       - 'pc-relay/**'
+      - 'tools/**'
       - '.github/workflows/build-sidecar.yml'
   workflow_dispatch:
 
@@ -42,7 +44,9 @@ jobs:
         run: |
           base64 -d android-sidecar/onroonlink-test.jks.b64 > android-sidecar/onroonlink-test.jks
           cp android-sidecar/onroonlink-test.jks android-s26-gateway/onroonlink-test.jks
-      - name: Static stateful-endpoint checks
+      - name: Apply S26 origin-preserved query patch
+        run: python3 tools/patch-s26-origin-query.py
+      - name: Static origin-preserved checks
         run: |
           if grep -R 'bindSocket(' android-s26-gateway/app/src/main/java; then echo 'S26 must not use Network.bindSocket'; exit 1; fi
           grep -q 'SOOD_QUERY_PC=18' android-sidecar/app/src/main/java/com/onroonlink/sidecar/TunnelMux.java
@@ -52,8 +56,11 @@ jobs:
           grep -q 'v1.8 STATEFUL ENDPOINT' android-sidecar/app/src/main/java/com/onroonlink/sidecar/MainActivity.java
           grep -q '127.0.0.1' android-sidecar/app/src/main/java/com/onroonlink/sidecar/BridgeService.java
           grep -q 'OPEN_PC' android-sidecar/app/src/main/java/com/onroonlink/sidecar/BridgeService.java
-          grep -q 'stopService' android-sidecar/app/src/main/java/com/onroonlink/sidecar/MainActivity.java && { echo 'Destructive restart still present'; exit 1; } || true
-          if grep -q 'LocalSoodInjector' android-sidecar/app/src/main/java/com/onroonlink/sidecar/BridgeService.java; then echo 'Old Core injection path still present'; exit 1; fi
+          grep -q 'forwardOriginalRoonQueryToRelay' android-s26-gateway/app/src/main/java/com/onroonlink/s26gateway/GatewayService.java
+          grep -q "new byte\[]{'S','2','6','Q'}" android-s26-gateway/app/src/main/java/com/onroonlink/s26gateway/GatewayService.java
+          grep -q '주소 저장 · 연결 유지' android-s26-gateway/app/src/main/java/com/onroonlink/s26gateway/MainActivity.java
+          if grep -q 'stopService' android-s26-gateway/app/src/main/java/com/onroonlink/s26gateway/MainActivity.java; then echo 'S26 destructive restart still present'; exit 1; fi
+          grep -q 'versionName = "1.8-origin-preserved-roon-query"' android-s26-gateway/app/build.gradle.kts
       - name: Build R8 APK
         working-directory: android-sidecar
         run: gradle --no-daemon :app:assembleDebug
@@ -79,13 +86,13 @@ jobs:
         run: |
           mkdir -p out
           cp android-sidecar/app/build/outputs/apk/debug/app-debug.apk out/ON-Roon-NetShare-R8-Sidecar-v1.8-STATEFUL-ENDPOINT.apk
-          cp android-s26-gateway/app/build/outputs/apk/debug/app-debug.apk out/ON-Roon-S26-Gateway-v1.7-NETSHARE-SOOD-PROXY.apk
+          cp android-s26-gateway/app/build/outputs/apk/debug/app-debug.apk out/ON-Roon-S26-Gateway-v1.8-ORIGIN-PRESERVED.apk
           sha256sum out/ON-Roon-NetShare-R8-Sidecar-v1.8-STATEFUL-ENDPOINT.apk > out/ON-Roon-NetShare-R8-Sidecar-v1.8-STATEFUL-ENDPOINT.sha256.txt
-          sha256sum out/ON-Roon-S26-Gateway-v1.7-NETSHARE-SOOD-PROXY.apk > out/ON-Roon-S26-Gateway-v1.7-NETSHARE-SOOD-PROXY.sha256.txt
+          sha256sum out/ON-Roon-S26-Gateway-v1.8-ORIGIN-PRESERVED.apk > out/ON-Roon-S26-Gateway-v1.8-ORIGIN-PRESERVED.sha256.txt
           cp r8-manifest.txt s26-manifest.txt out/
       - uses: actions/upload-artifact@v4
         with:
-          name: ON-Roon-NetShare-R8-v1.8-STATEFUL-ENDPOINT-S26-v1.7
+          name: ON-Roon-NetShare-R8-v1.8-S26-v1.8-ORIGIN-PRESERVED
           path: out/
 
   windows-relay:
@@ -97,28 +104,32 @@ jobs:
           python-version: '3.12'
       - name: Install PyInstaller
         run: python -m pip install --disable-pip-version-check pyinstaller==6.15.0
-      - name: Static stateful-endpoint checks
+      - name: Apply PC origin-preserved query patch
+        run: python tools/patch-pc-origin-query.py
+      - name: Static origin-preserved checks
         shell: bash
         run: |
           grep -q 'SOOD_QUERY_PC=18' pc-relay/roon_netshare_relay.py
           grep -q 'SOOD_RESPONSE_R8=19' pc-relay/roon_netshare_relay.py
           grep -q 'deliver_r8_response_to_pc' pc-relay/roon_netshare_relay.py
-          grep -q 'PC ROON QUERY -> R8' pc-relay/roon_netshare_relay.py
+          grep -q 'CONTROL_MAGIC=b"S26Q"' pc-relay/roon_netshare_relay.py
+          grep -q 'handle_s26_query_control' pc-relay/roon_netshare_relay.py
+          grep -q 'PC ROON ORIGINAL QUERY -> R8' pc-relay/roon_netshare_relay.py
+          grep -q 'socket.MSG_PEEK' pc-relay/roon_netshare_relay.py
           grep -q 'ROON READY FOUND' pc-relay/roon_netshare_relay.py
           grep -q 'OPEN_OK' pc-relay/roon_netshare_relay.py
-          grep -q 'STATEFUL ROON READY ENDPOINT' pc-relay/roon_netshare_relay.py
-          if grep -q 'active_core_probe_loop' pc-relay/roon_netshare_relay.py; then echo 'Old Core probe path still present'; exit 1; fi
+          grep -q 'ORIGIN-PRESERVED ROON READY' pc-relay/roon_netshare_relay.py
       - name: Syntax check
         run: python -m py_compile pc-relay/roon_netshare_relay.py
       - name: Build PC Relay
-        run: pyinstaller --clean --onefile --name ON-Roon-NetShare-PC-Relay-v1.5-STATEFUL-ENDPOINT pc-relay/roon_netshare_relay.py
+        run: pyinstaller --clean --onefile --name ON-Roon-NetShare-PC-Relay-v1.6-ORIGIN-PRESERVED pc-relay/roon_netshare_relay.py
       - name: Package Relay artifact
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force out | Out-Null
-          Copy-Item dist/ON-Roon-NetShare-PC-Relay-v1.5-STATEFUL-ENDPOINT.exe out/
-          (Get-FileHash out/ON-Roon-NetShare-PC-Relay-v1.5-STATEFUL-ENDPOINT.exe -Algorithm SHA256).Hash | Out-File out/ON-Roon-NetShare-PC-Relay-v1.5-STATEFUL-ENDPOINT.sha256.txt
+          Copy-Item dist/ON-Roon-NetShare-PC-Relay-v1.6-ORIGIN-PRESERVED.exe out/
+          (Get-FileHash out/ON-Roon-NetShare-PC-Relay-v1.6-ORIGIN-PRESERVED.exe -Algorithm SHA256).Hash | Out-File out/ON-Roon-NetShare-PC-Relay-v1.6-ORIGIN-PRESERVED.sha256.txt
       - uses: actions/upload-artifact@v4
         with:
-          name: ON-Roon-NetShare-PC-Relay-v1.5-STATEFUL-ENDPOINT
+          name: ON-Roon-NetShare-PC-Relay-v1.6-ORIGIN-PRESERVED
           path: out/
