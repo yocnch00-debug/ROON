@@ -1,5 +1,6 @@
-import socket, struct, threading, time, os, subprocess, secrets, ipaddress
+import socket, struct, threading, time, os, subprocess, secrets, ipaddress, sys, hashlib, hmac
 from collections import OrderedDict
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 PC_LAN_IP="192.168.50.84"
 LISTEN_PORT=51920
@@ -7,9 +8,11 @@ SOOD_PORT=9003
 SOOD_GROUP="239.255.90.90"
 PC_BROADCAST="192.168.50.255"
 MAX_FRAME=1024*1024
+MAX_SECURE_RECORD=1100000
 PCP_PORT=5351
 PCP_LIFETIME=3600
 PCP_NONCE=secrets.token_bytes(12)
+RELAY_KEY=""
 
 HELLO=1; PING=2; PONG=3; STATUS=4
 SOOD_QUERY_R8=16; SOOD_RESPONSE_PC=17; SOOD_QUERY_PC=18; SOOD_RESPONSE_R8=19
@@ -24,6 +27,71 @@ next_lock=threading.Lock(); next_stream=2; next_query=200002
 
 def log(msg): print(time.strftime("[%H:%M:%S]"),msg,flush=True)
 
+def recvn(sock,n):
+    out=bytearray()
+    while len(out)<n:
+        b=sock.recv(n-len(out))
+        if not b: raise EOFError("socket closed")
+        out+=b
+    return bytes(out)
+
+def app_dir():
+    if getattr(sys,"frozen",False):return os.path.dirname(os.path.abspath(sys.executable))
+    return os.path.dirname(os.path.abspath(__file__))
+
+def load_or_create_relay_key():
+    path=os.path.join(app_dir(),"ON-Roon-PC-Relay.key")
+    try:
+        if os.path.exists(path):
+            key=open(path,"r",encoding="utf-8").read().strip()
+            if len(key)>=16:return key,path
+    except Exception:pass
+    key=secrets.token_hex(16).upper()
+    try:
+        with open(path,"w",encoding="utf-8") as f:f.write(key+"\n")
+    except Exception as e:
+        fallback=os.path.join(os.getcwd(),"ON-Roon-PC-Relay.key")
+        with open(fallback,"w",encoding="utf-8") as f:f.write(key+"\n")
+        path=fallback
+        log("Relay KEY 저장 경로 fallback: "+str(e))
+    return key,path
+
+def derive_aes_key(secret):return hashlib.sha256(secret.encode("utf-8")).digest()
+
+class SecureChannel:
+    def __init__(self,raw,key):
+        self.raw=raw;self.aes=AESGCM(key);self.buf=bytearray();self.send_lock=threading.Lock();self.recv_lock=threading.Lock()
+    def sendall(self,data):
+        if not data:return
+        payload=bytes(data);nonce=os.urandom(12);ct=self.aes.encrypt(nonce,payload,None)
+        record=struct.pack("!I",len(ct))+nonce+ct
+        with self.send_lock:self.raw.sendall(record)
+    def recv(self,n):
+        if n<=0:return b""
+        with self.recv_lock:
+            while not self.buf:
+                hdr=recvn(self.raw,4);ln=struct.unpack("!I",hdr)[0]
+                if ln<16 or ln>MAX_SECURE_RECORD:raise OSError("secure record length "+str(ln))
+                nonce=recvn(self.raw,12);ct=recvn(self.raw,ln);pt=self.aes.decrypt(nonce,ct,None);self.buf.extend(pt)
+            out=bytes(self.buf[:n]);del self.buf[:len(out)];return out
+    def close(self):
+        try:self.raw.close()
+        except:pass
+
+def secure_accept(raw,addr):
+    key=derive_aes_key(RELAY_KEY)
+    raw.settimeout(5.0)
+    hello=recvn(raw,52)
+    if hello[:4]!=b"ONR2":raise OSError("bad secure magic")
+    client_nonce=hello[4:20];got=hello[20:52]
+    expected=hmac.new(key,b"client"+client_nonce,hashlib.sha256).digest()
+    if not hmac.compare_digest(got,expected):raise OSError("Relay KEY authentication failed")
+    server_nonce=os.urandom(16)
+    mac=hmac.new(key,b"server"+client_nonce+server_nonce,hashlib.sha256).digest()
+    raw.sendall(b"OKR2"+server_nonce+mac);raw.settimeout(None)
+    log("SECURE AES-GCM authenticated from "+str(addr))
+    return SecureChannel(raw,key)
+
 def get_default_gateway():
     if os.name != "nt": return None
     cmd=("Get-NetRoute -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' "
@@ -35,48 +103,38 @@ def get_default_gateway():
         out=subprocess.check_output(["powershell","-NoProfile","-Command",cmd],text=True,timeout=5,creationflags=flags,stderr=subprocess.DEVNULL)
         for line in out.splitlines():
             line=line.strip()
-            try:
-                socket.inet_aton(line)
-                return line
-            except OSError: pass
-    except Exception as e:
-        log("PCP 기본 게이트웨이 탐색 실패: "+str(e))
+            try:socket.inet_aton(line);return line
+            except OSError:pass
+    except Exception as e:log("PCP 기본 게이트웨이 탐색 실패: "+str(e))
     return None
 
-def ipv4_mapped(ip):
-    return b"\x00"*10+b"\xff\xff"+socket.inet_aton(ip)
+def ipv4_mapped(ip):return b"\x00"*10+b"\xff\xff"+socket.inet_aton(ip)
 
 def decode_pcp_address(raw):
     if len(raw)!=16:return "?"
-    if raw[:12]==b"\x00"*10+b"\xff\xff":
-        return socket.inet_ntoa(raw[12:16])
+    if raw[:12]==b"\x00"*10+b"\xff\xff":return socket.inet_ntoa(raw[12:16])
     try:return str(ipaddress.IPv6Address(raw))
     except:return "?"
 
 def pcp_map_request(gateway,prefer_failure=True):
     probe=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
-    try:
-        probe.connect((gateway,PCP_PORT));local_ip=probe.getsockname()[0]
+    try:probe.connect((gateway,PCP_PORT));local_ip=probe.getsockname()[0]
     finally:probe.close()
     client=ipv4_mapped(local_ip)
     header=struct.pack("!BBHI16s",2,1,0,PCP_LIFETIME,client)
     body=PCP_NONCE+struct.pack("!B3sHH16s",6,b"\x00\x00\x00",LISTEN_PORT,LISTEN_PORT,b"\x00"*16)
-    # PREFER_FAILURE(code=2)로 우선 외부 포트도 51920을 정확히 요청한다.
     option=struct.pack("!BBH",2,0,0) if prefer_failure else b""
     req=header+body+option
     s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
-    try:
-        s.bind((local_ip,0));s.settimeout(2.5);s.sendto(req,(gateway,PCP_PORT));resp,_=s.recvfrom(2048)
+    try:s.bind((local_ip,0));s.settimeout(2.5);s.sendto(req,(gateway,PCP_PORT));resp,_=s.recvfrom(2048)
     finally:s.close()
     if len(resp)<60:raise OSError("PCP 응답이 너무 짧음")
     if resp[0]!=2 or (resp[1]&0x80)==0 or (resp[1]&0x7f)!=1:raise OSError("PCP MAP 응답 형식 오류")
-    result=resp[3]
-    lifetime=struct.unpack("!I",resp[4:8])[0]
+    result=resp[3];lifetime=struct.unpack("!I",resp[4:8])[0]
     if result!=0:return {"ok":False,"result":result,"lifetime":lifetime,"gateway":gateway,"local":local_ip,"prefer":prefer_failure}
     if resp[24:36]!=PCP_NONCE:raise OSError("PCP nonce 불일치")
     if resp[36]!=6:raise OSError("PCP protocol 불일치")
-    internal=struct.unpack("!H",resp[40:42])[0]
-    external=struct.unpack("!H",resp[42:44])[0]
+    internal=struct.unpack("!H",resp[40:42])[0];external=struct.unpack("!H",resp[42:44])[0]
     if internal!=LISTEN_PORT:raise OSError("PCP internal port 불일치")
     external_ip=decode_pcp_address(resp[44:60])
     return {"ok":True,"result":0,"lifetime":lifetime,"gateway":gateway,"local":local_ip,"external_ip":external_ip,"external_port":external,"prefer":prefer_failure}
@@ -86,8 +144,6 @@ def pcp_map_once():
     if not gateway:raise OSError("기본 게이트웨이를 찾지 못함")
     first=pcp_map_request(gateway,True)
     if first.get("ok"):return first
-    # 공유기가 PREFER_FAILURE를 지원하지 않거나 정확한 51920을 줄 수 없으면
-    # 일반 MAP으로 한 번 더 요청하고 실제 배정 포트를 화면에 알려준다.
     log("PCP 정확한 51920 요청 실패 result="+str(first.get("result"))+" · 일반 MAP 재시도")
     second=pcp_map_request(gateway,False)
     if not second.get("ok"):raise OSError("PCP MAP 실패 result="+str(second.get("result")))
@@ -97,23 +153,13 @@ def pcp_keepalive_loop():
     while True:
         wait=60
         try:
-            info=pcp_map_once();life=int(info.get("lifetime") or PCP_LIFETIME)
-            ext=info.get("external_ip","?");port=info.get("external_port",0)
-            exact=(port==LISTEN_PORT)
-            log("PCP TCP 자동개방 성공 · "+str(info.get("local"))+":"+str(LISTEN_PORT)+" → "+ext+":"+str(port)+("· 외부포트 51920 OK" if exact else " · 주의: S26 포트를 "+str(port)+"로 입력"))
+            info=pcp_map_once();life=int(info.get("lifetime") or PCP_LIFETIME);ext=info.get("external_ip","?");port=info.get("external_port",0);exact=(port==LISTEN_PORT)
+            log("PCP TCP 자동개방 성공 · "+str(info.get("local"))+":"+str(LISTEN_PORT)+" -> "+ext+":"+str(port)+( " · 외부포트 51920 OK" if exact else " · 주의: S26 포트를 "+str(port)+"로 입력"))
             wait=max(60,min(1200,max(60,life//2)))
         except Exception as e:
             log("PCP TCP 51920 자동개방 실패: "+str(e)+" · 기존 PHONE RoonLink는 영향 없음")
             wait=45
         time.sleep(wait)
-
-def recvn(sock,n):
-    out=bytearray()
-    while len(out)<n:
-        b=sock.recv(n-len(out))
-        if not b: raise EOFError("socket closed")
-        out+=b
-    return bytes(out)
 
 class Tunnel:
     def __init__(self,sock,addr): self.sock=sock; self.addr=addr; self.lock=threading.Lock(); self.alive=True
@@ -268,13 +314,11 @@ def handle_frame(t,typ,sid,payload):
         log("R8 CONNECTED "+payload.decode(errors="replace"));t.send(STATUS,0,b"RELAY_OK")
     elif typ==PING:t.send(PONG,0)
     elif typ==SOOD_QUERY_R8:
-        ip,port,packet=decode_endpoint_packet(payload)
-        threading.Thread(target=probe_lan,args=(t,sid,packet),daemon=True).start()
+        ip,port,packet=decode_endpoint_packet(payload);threading.Thread(target=probe_lan,args=(t,sid,packet),daemon=True).start()
     elif typ==SOOD_RESPONSE_R8:
         ip,port,packet=decode_endpoint_packet(payload);handle_r8_sood_response(t,sid,ip,port,packet)
     elif typ==OPEN_R8:
-        ip,port,_=decode_endpoint_packet(payload)
-        threading.Thread(target=open_r8_to_pc,args=(t,sid,ip,port),daemon=True).start()
+        ip,port,_=decode_endpoint_packet(payload);threading.Thread(target=open_r8_to_pc,args=(t,sid,ip,port),daemon=True).start()
     elif typ==DATA:
         with streams_lock:s=streams.get(sid)
         if s:
@@ -292,8 +336,7 @@ def probe_lan(t,flow,query):
         except OSError:s.bind(("0.0.0.0",0))
         try:s.setsockopt(socket.IPPROTO_IP,socket.IP_MULTICAST_IF,socket.inet_aton(PC_LAN_IP))
         except OSError:pass
-        s.settimeout(.30);mark_injected(query)
-        s.sendto(query,(SOOD_GROUP,SOOD_PORT))
+        s.settimeout(.30);mark_injected(query);s.sendto(query,(SOOD_GROUP,SOOD_PORT))
         try:s.sendto(query,(PC_BROADCAST,SOOD_PORT))
         except OSError:pass
         end=time.time()+1.4;seen=set();count=0
@@ -304,8 +347,7 @@ def probe_lan(t,flow,query):
             if not parsed or parsed[0]=="Q":continue
             sig=(addr,hash(data))
             if sig in seen:continue
-            seen.add(sig);count+=1
-            t.send(SOOD_RESPONSE_PC,flow,endpoint_packet(addr[0],addr[1],data))
+            seen.add(sig);count+=1;t.send(SOOD_RESPONSE_PC,flow,endpoint_packet(addr[0],addr[1],data))
         if count:log(f"R8 discovery flow {flow}: LAN responses={count}")
     except Exception as e:log("LAN SOOD probe: "+repr(e))
     finally:s.close()
@@ -314,10 +356,7 @@ def pc_sood_listener():
     while True:
         s=None
         try:
-            s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM,socket.IPPROTO_UDP)
-            s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
-            s.bind(("0.0.0.0",SOOD_PORT))
-            s.setsockopt(socket.IPPROTO_IP,socket.IP_ADD_MEMBERSHIP,socket.inet_aton(SOOD_GROUP)+socket.inet_aton(PC_LAN_IP))
+            s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM,socket.IPPROTO_UDP);s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1);s.bind(("0.0.0.0",SOOD_PORT));s.setsockopt(socket.IPPROTO_IP,socket.IP_ADD_MEMBERSHIP,socket.inet_aton(SOOD_GROUP)+socket.inet_aton(PC_LAN_IP))
             log(f"SOOD LAN listener {SOOD_GROUP}:{SOOD_PORT} on {PC_LAN_IP}")
             while True:
                 data,addr=s.recvfrom(65535);parsed=parse_sood(data)
@@ -327,8 +366,7 @@ def pc_sood_listener():
                 flow=alloc_query()
                 with origins_lock:origins_pc[flow]=addr
                 t.send(SOOD_QUERY_PC,flow,endpoint_packet(addr[0],addr[1],data))
-        except Exception as e:
-            log("SOOD listener unavailable/retry: "+repr(e));time.sleep(2)
+        except Exception as e:log("SOOD listener unavailable/retry: "+repr(e));time.sleep(2)
         finally:
             if s:
                 try:s.close()
@@ -338,8 +376,7 @@ def handle_r8_sood_response(t,flow,r8ip,r8port,packet):
     with origins_lock:origin=origins_pc.get(flow)
     if not origin:return
     try:
-        rewritten=rewrite_ports(packet,lambda prop,p:ensure_pc_forwarder(r8ip,p))
-        s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
+        rewritten=rewrite_ports(packet,lambda prop,p:ensure_pc_forwarder(r8ip,p));s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
         try:
             try:s.bind((PC_LAN_IP,0))
             except OSError:s.bind(("0.0.0.0",0))
@@ -351,19 +388,15 @@ def ensure_pc_forwarder(target_ip,target_port):
     key=f"{target_ip}:{target_port}"
     with forward_lock:
         if key in pc_forward_ports:return pc_forward_ports[key][0]
-        ss=socket.socket(socket.AF_INET,socket.SOCK_STREAM);ss.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1);ss.bind(("0.0.0.0",0));ss.listen(16)
-        port=ss.getsockname()[1];pc_forward_ports[key]=(port,ss)
-    log(f"PC local TCP {port} -> R8 {key}")
-    threading.Thread(target=pc_forward_accept,args=(ss,target_ip,target_port),daemon=True).start()
-    return port
+        ss=socket.socket(socket.AF_INET,socket.SOCK_STREAM);ss.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1);ss.bind(("0.0.0.0",0));ss.listen(16);port=ss.getsockname()[1];pc_forward_ports[key]=(port,ss)
+    log(f"PC local TCP {port} -> R8 {key}");threading.Thread(target=pc_forward_accept,args=(ss,target_ip,target_port),daemon=True).start();return port
 
 def pc_forward_accept(ss,target_ip,target_port):
     while True:
         try:local,_=ss.accept()
         except Exception:return
         t=get_tunnel()
-        if not t:
-            local.close();continue
+        if not t:local.close();continue
         sid=alloc_even_stream()
         with streams_lock:streams[sid]=local
         try:t.send(OPEN_PC,sid,endpoint_packet(target_ip,target_port));threading.Thread(target=pump_socket,args=(t,sid,local),daemon=True).start()
@@ -374,22 +407,31 @@ def tunnel_server():
     srv=socket.socket(socket.AF_INET,socket.SOCK_STREAM);srv.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1);srv.bind(("0.0.0.0",LISTEN_PORT));srv.listen(8)
     log(f"PC Relay listening 0.0.0.0:{LISTEN_PORT} (LAN {PC_LAN_IP})")
     while True:
-        s,addr=srv.accept();s.setsockopt(socket.IPPROTO_TCP,socket.TCP_NODELAY,1);t=Tunnel(s,addr)
-        log("Gateway TCP accepted from "+str(addr))
-        with active_lock:
-            old=active_tunnel;active_tunnel=t
+        raw,addr=srv.accept();raw.setsockopt(socket.IPPROTO_TCP,socket.TCP_NODELAY,1)
+        try:secure=secure_accept(raw,addr)
+        except Exception as e:
+            log("SECURE connection rejected from "+str(addr)+": "+str(e))
+            try:raw.close()
+            except:pass
+            continue
+        t=Tunnel(secure,addr)
+        with active_lock:old=active_tunnel;active_tunnel=t
         if old:
             try:old.alive=False;old.sock.close()
             except:pass
         threading.Thread(target=t.loop,daemon=True).start()
 
 def main():
-    print("ON RoonLink NetShare PC Relay v1.1 - PUBLIC/PCP")
+    global RELAY_KEY
+    RELAY_KEY,key_path=load_or_create_relay_key()
+    print("ON RoonLink NetShare PC Relay v1.2 - PUBLIC / PCP / AES-GCM")
     print("Existing Roon Server + alpha7 Host + S26 PHONE RoonLink stay unchanged.")
-    print("TCP 51920 is a separate R8 relay path. PCP will try to open it automatically.\n")
-    threading.Thread(target=pcp_keepalive_loop,daemon=True).start()
-    threading.Thread(target=pc_sood_listener,daemon=True).start()
-    tunnel_server()
+    print("TCP 51920 is a separate authenticated encrypted R8 relay path.")
+    print("\n============================================================")
+    print(" S26 RELAY KEY : "+RELAY_KEY)
+    print(" KEY file      : "+key_path)
+    print("============================================================\n")
+    threading.Thread(target=pcp_keepalive_loop,daemon=True).start();threading.Thread(target=pc_sood_listener,daemon=True).start();tunnel_server()
 
 if __name__=="__main__":
     try:main()
