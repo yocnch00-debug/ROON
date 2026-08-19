@@ -6,6 +6,11 @@ on:
     paths:
       - 'sidecar-src.zip'
       - '.github/workflows/build-sidecar.yml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'sidecar-src.zip'
+      - '.github/workflows/build-sidecar.yml'
   workflow_dispatch:
 
 permissions:
