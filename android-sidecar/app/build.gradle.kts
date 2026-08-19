@@ -8,8 +8,8 @@ android {
         applicationId = "com.onroonlink.sidecar"
         minSdk = 26
         targetSdk = 36
-        versionCode = 6
-        versionName = "1.6-real-roon-sood-bridge"
+        versionCode = 7
+        versionName = "1.7-local-sood-inject"
     }
 
     signingConfigs {
