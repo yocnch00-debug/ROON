@@ -15,10 +15,9 @@ import java.util.concurrent.atomic.*;
 public class BridgeService extends Service {
     public static final String ACTION_STATUS="com.onroonlink.sidecar.STATUS";
     private static final String CHANNEL="on_roon_sidecar";
-    private static final String PROXY_HOST="192.168.49.1";
-    private static final int PROXY_PORT=8282;
-    private static final String RELAY_HOST="192.168.50.84";
-    private static final int RELAY_PORT=51920;
+    private static final String GATEWAY_HOST="192.168.49.1";
+    private static final int GATEWAY_PORT=51921;
+    private static final String PC_RELAY_LABEL="192.168.50.84:51920";
     private static final String CORE_SERVICE="00720724-5143-4a9b-abac-0e50cba674bb";
 
     private final ExecutorService workers=Executors.newCachedThreadPool();
@@ -77,17 +76,17 @@ public class BridgeService extends Service {
     }
 
     private void connectTunnel(WifiRoute route)throws Exception{
-        status("PROXY","WAIT","NetShare VPN 경유 PC Relay 직접 연결 중");
-        log("직접 TCP 시도 → "+RELAY_HOST+":"+RELAY_PORT+" (NetShare VPN이 운송)");
-        Socket s=connectWithoutNetworkBind(route.address,RELAY_HOST,RELAY_PORT,5000);
+        status("PROXY","WAIT","S26 Gateway "+GATEWAY_HOST+":"+GATEWAY_PORT+" 연결 중");
+        log("S26 로컬 Gateway TCP 시도 → "+GATEWAY_HOST+":"+GATEWAY_PORT);
+        Socket s=connectWithoutNetworkBind(route.address,GATEWAY_HOST,GATEWAY_PORT,5000);
         s.setSoTimeout(0);
-        status("PROXY","OK","NetShare VPN 경유 → "+RELAY_HOST+":"+RELAY_PORT+" TCP 통과");
+        status("PROXY","OK","S26 Gateway 연결 → "+GATEWAY_HOST+":"+GATEWAY_PORT);
 
         tunnelSocket=s;
         TunnelMux tm=new TunnelMux(s); mux=tm;
-        tm.sendText(TunnelMux.HELLO,0,"R8II|ON-SIDECAR|1.2");
+        tm.sendText(TunnelMux.HELLO,0,"R8II|ON-SIDECAR|1.3");
         tm.readLoop(this::onFrame);
-        throw new EOFException("PC Relay 연결 종료");
+        throw new EOFException("S26 Gateway/PC Relay 연결 종료");
     }
 
     private Socket connectWithoutNetworkBind(InetAddress localAddress,String host,int port,int timeout)throws IOException{
@@ -99,13 +98,13 @@ public class BridgeService extends Service {
             return s;
         }catch(IOException e){
             first=e;
-            log("TCP 기본 라우팅 실패: "+shortErr(e)+" · Wi-Fi 소스 바인드 재시도");
+            log("TCP 기본 라우팅 실패: "+shortErr(e)+" · wlan0 소스 바인드 재시도");
         }
         Socket s=new Socket();
         try{
             s.bind(new InetSocketAddress(localAddress,0));
             s.connect(new InetSocketAddress(host,port),timeout);
-            log("TCP Wi-Fi 주소 바인드 성공 → "+host+":"+port);
+            log("TCP wlan0 주소 바인드 성공 → "+host+":"+port);
             return s;
         }catch(IOException e){
             closeQuiet(s);
@@ -121,7 +120,7 @@ public class BridgeService extends Service {
             case TunnelMux.PONG: return;
             case TunnelMux.STATUS:{
                 String s=new String(payload,StandardCharsets.UTF_8);
-                if(s.startsWith("RELAY_OK"))status("RELAY","OK",RELAY_HOST+":"+RELAY_PORT);
+                if(s.startsWith("RELAY_OK"))status("RELAY","OK","S26 경유 PC Relay "+PC_RELAY_LABEL);
                 else log("PC: "+s);
                 return;
             }
@@ -207,11 +206,17 @@ public class BridgeService extends Service {
     private void openPcToR8(int sid,String targetIp,int targetPort){
         try{
             WifiRoute route=wifi;if(route==null)throw new IOException("Wi-Fi 없음");
-            Socket s=connectWithoutNetworkBind(route.address,targetIp,targetPort,5000);
+            String localTarget=targetIp;
+            if(targetIp.equals(route.address.getHostAddress()))localTarget="127.0.0.1";
+            Socket s;
+            if(localTarget.startsWith("127.")){
+                s=new Socket();s.connect(new InetSocketAddress(localTarget,targetPort),5000);
+                log("R8 reverse local → "+localTarget+":"+targetPort);
+            }else s=connectWithoutNetworkBind(route.address,localTarget,targetPort,5000);
             streams.put(sid,s);
             TunnelMux tm=mux;if(tm==null)throw new IOException("tunnel 없음");
             tm.send(TunnelMux.OPEN_OK,sid,new byte[0]);
-            tm.sendText(TunnelMux.STATUS,0,"OUTPUT_STREAM_OPEN "+targetIp+":"+targetPort);
+            tm.sendText(TunnelMux.STATUS,0,"OUTPUT_STREAM_OPEN "+localTarget+":"+targetPort);
             status("OUTPUT","OK","PC/Core → R8 로컬 스트림 연결");
             workers.execute(()->pumpToTunnel(sid,s));
         }catch(Throwable t){
