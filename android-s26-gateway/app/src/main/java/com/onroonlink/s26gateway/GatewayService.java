@@ -14,9 +14,9 @@ public class GatewayService extends Service {
     public static final String ACTION_STATUS="com.onroonlink.s26gateway.STATUS";
     private static final String CHANNEL="on_roon_s26_gateway";
     private static final int LISTEN_PORT=51921;
-    private static final int PC_PORT=51920;
+    private static final String DEFAULT_PC_HOST="121.133.225.83";
+    private static final int DEFAULT_PC_PORT=51920;
     private static final String PC_LAN="192.168.50.84";
-    private static final String[] LEGACY_VPN_HOSTS={"10.88.10.1","10.89.0.1"};
 
     private final ExecutorService workers=Executors.newCachedThreadPool();
     private final AtomicLong totalBytes=new AtomicLong();
@@ -43,12 +43,12 @@ public class GatewayService extends Service {
     }
 
     private void serverLoop(){
-        status("APP","OK","일반 Android TCP Gateway · PHONE VPN 자동 경유 · 자체 VPN 없음");
+        status("APP","OK","R8 로컬 수신 · PC는 물리 인터넷 직결 · PHONE VPN 미변경");
         while(running){
             try{
                 ServerSocket ss=new ServerSocket();ss.setReuseAddress(true);ss.bind(new InetSocketAddress("0.0.0.0",LISTEN_PORT));server=ss;
                 status("LISTEN","OK","0.0.0.0:"+LISTEN_PORT+" · R8 대기");
-                status("PC","WAIT","R8 연결 시 PHONE VPN 자동 탐색");
+                status("PC","WAIT","R8 연결 시 물리 인터넷으로 PC Relay 접속");
                 while(running){
                     Socket r8=ss.accept();r8.setTcpNoDelay(true);r8.setKeepAlive(true);
                     closeQuiet(currentR8);closeQuiet(currentPc);
@@ -59,7 +59,7 @@ public class GatewayService extends Service {
                 }
             }catch(Throwable t){if(running)log("listener 재시작: "+shortErr(t));}
             finally{closeQuiet(server);server=null;}
-            sleep(1500);
+            sleep(1200);
         }
     }
 
@@ -77,92 +77,94 @@ public class GatewayService extends Service {
             try{a.get();}catch(Throwable ignored){}
             try{b.cancel(true);}catch(Throwable ignored){}
         }catch(Throwable t){
-            status("PC","WAIT","PC Relay 연결 실패: "+shortErr(t));
-            log("PC 연결 실패: "+shortErr(t));
+            status("PC","WAIT","PC 외부 Relay 연결 실패: "+shortErr(t));
+            log("PC 외부 Relay 연결 실패: "+shortErr(t));
         }finally{
             closeQuiet(r8);closeQuiet(pc);
             if(currentR8==r8)currentR8=null;
             if(currentPc==pc)currentPc=null;
             status("R8","WAIT","R8 재연결 대기");
-            status("PC","WAIT","R8 연결 시 PHONE VPN 자동 탐색");
+            status("PC","WAIT","R8 연결 시 물리 인터넷으로 PC Relay 접속");
         }
     }
 
     private PcConnection connectPc()throws IOException{
+        SharedPreferences sp=getSharedPreferences("gateway",MODE_PRIVATE);
+        String publicHost=sp.getString("pc_host",DEFAULT_PC_HOST);
+        if(publicHost==null||publicHost.trim().isEmpty())publicHost=DEFAULT_PC_HOST;
+        publicHost=publicHost.trim();
+        int publicPort=sp.getInt("pc_port",DEFAULT_PC_PORT);
+        if(publicPort<1||publicPort>65535)publicPort=DEFAULT_PC_PORT;
+
         ArrayList<Candidate> candidates=new ArrayList<>();
         ConnectivityManager cm=(ConnectivityManager)getSystemService(CONNECTIVITY_SERVICE);
         if(cm!=null){
             try{
                 for(Network n:cm.getAllNetworks()){
                     NetworkCapabilities caps=cm.getNetworkCapabilities(n);
-                    if(caps==null||!caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN))continue;
+                    if(caps==null)continue;
+                    if(caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN))continue;
+                    if(!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET))continue;
+
                     LinkProperties lp=cm.getLinkProperties(n);
-                    String iface=lp==null?"vpn":String.valueOf(lp.getInterfaceName());
-                    LinkedHashSet<String> hosts=new LinkedHashSet<>();
-                    if(lp!=null){
-                        for(LinkAddress la:lp.getLinkAddresses()){
-                            InetAddress a=la.getAddress();
-                            if(a instanceof Inet4Address){
-                                String auto=hostOneFor((Inet4Address)a,la.getPrefixLength());
-                                if(auto!=null)hosts.add(auto);
-                            }
-                        }
-                        for(RouteInfo r:lp.getRoutes()){
-                            InetAddress g=r.getGateway();
-                            if(g instanceof Inet4Address&&!g.isAnyLocalAddress())hosts.add(g.getHostAddress());
-                            IpPrefix d=r.getDestination();
-                            if(d!=null&&d.getAddress() instanceof Inet4Address){
-                                String h=hostOneFor((Inet4Address)d.getAddress(),d.getPrefixLength());
-                                if(h!=null)hosts.add(h);
-                            }
-                        }
-                    }
-                    hosts.add(PC_LAN);
-                    for(String h:LEGACY_VPN_HOSTS)hosts.add(h);
-                    for(String h:hosts)addCandidate(candidates,new Candidate(n,h,"PHONE VPN "+iface));
-                    log("PHONE VPN 발견 → "+iface+" · PC 후보 "+hosts);
+                    String iface=lp==null?"?":String.valueOf(lp.getInterfaceName());
+                    String via=transportName(caps)+" "+iface;
+                    boolean pcLan=hasPcLanAddress(lp);
+                    boolean validated=caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED);
+                    log("물리 인터넷 발견 → "+via+" · validated="+validated+(pcLan?" · PC LAN 동일대역":""));
+
+                    // 집/사무실에서 S26이 PC와 같은 192.168.50.x Wi-Fi라면 가장 짧은 LAN 경로를 먼저 쓴다.
+                    if(pcLan)addCandidate(candidates,new Candidate(n,PC_LAN,DEFAULT_PC_PORT,via+" / LAN"));
+                    // 차량/외부에서는 PHONE VPN을 거치지 않고 물리 Wi-Fi/셀룰러에서 PC 공인주소로 바로 접속한다.
+                    addCandidate(candidates,new Candidate(n,publicHost,publicPort,via+" / PUBLIC"));
                 }
-            }catch(Throwable t){log("PHONE VPN 탐색 오류: "+shortErr(t));}
+            }catch(Throwable t){log("물리 인터넷 탐색 오류: "+shortErr(t));}
         }
 
-        // VPN 객체를 Android Network.bindSocket()으로 명시 지정하는 것이 핵심이다.
-        // 기존 버전은 주소만 넣고 기본 라우팅에 맡겨 NetShare/Wi-Fi 쪽으로 새는 경우가 있었다.
-        if(candidates.isEmpty())log("PHONE VPN Network를 못 찾음 · 고정 후보로 최종 시도");
-        for(String h:LEGACY_VPN_HOSTS)addCandidate(candidates,new Candidate(null,h,"기본 라우팅"));
-        addCandidate(candidates,new Candidate(null,PC_LAN,"기본 라우팅"));
+        if(candidates.isEmpty())throw new IOException("VPN 아닌 물리 인터넷 Network를 찾지 못함");
 
+        // 검증된 네트워크를 우선하도록 정렬한다. NetworkCapabilities는 위에서 로그만 남기므로
+        // 실제 실패 시에는 다음 후보까지 순차적으로 모두 시도한다.
         IOException last=null;
         for(Candidate c:candidates){
             Socket s=new Socket();
             try{
-                if(c.network!=null)c.network.bindSocket(s);
-                log("PC Relay TCP 시도 → "+c.host+":"+PC_PORT+" ["+c.via+"]");
-                s.connect(new InetSocketAddress(c.host,PC_PORT),2800);
+                c.network.bindSocket(s);
+                log("PC Relay 직결 시도 → "+c.host+":"+c.port+" ["+c.via+"]");
+                s.connect(new InetSocketAddress(c.host,c.port),4200);
                 s.setTcpNoDelay(true);s.setKeepAlive(true);
-                String label=c.host+":"+PC_PORT+" · "+c.via;
-                log("PC Relay TCP 성공 → "+label);
+                String label=c.host+":"+c.port+" · "+c.via;
+                log("PC Relay 직결 성공 → "+label+" · local="+s.getLocalSocketAddress());
                 return new PcConnection(s,label);
-            }catch(IOException e){last=e;closeQuiet(s);log("PC Relay 실패 "+c.host+" ["+c.via+"]: "+shortErr(e));}
+            }catch(IOException e){last=e;closeQuiet(s);log("PC Relay 직결 실패 "+c.host+":"+c.port+" ["+c.via+"]: "+shortErr(e));}
         }
-        throw new IOException("PHONE VPN 포함 모든 PC Relay 경로 실패",last);
+        throw new IOException("모든 물리 인터넷 PC Relay 경로 실패",last);
     }
 
     private static void addCandidate(ArrayList<Candidate> list,Candidate c){
-        for(Candidate x:list)if(x.network==c.network&&x.host.equals(c.host))return;
+        for(Candidate x:list)if(x.network.equals(c.network)&&x.host.equals(c.host)&&x.port==c.port)return;
         list.add(c);
     }
 
-    private static String hostOneFor(Inet4Address addr,int prefix){
+    private static boolean hasPcLanAddress(LinkProperties lp){
+        if(lp==null)return false;
         try{
-            byte[] b=addr.getAddress();
-            int ip=((b[0]&255)<<24)|((b[1]&255)<<16)|((b[2]&255)<<8)|(b[3]&255);
-            int p=prefix;
-            if(p<8||p>30)p=24; // /32 터널 주소도 실제 peer 대역은 보통 같은 /24의 .1
-            int mask=(int)(0xffffffffL<<(32-p));
-            int net=ip&mask;
-            int h=net+1;
-            return ((h>>>24)&255)+"."+((h>>>16)&255)+"."+((h>>>8)&255)+"."+(h&255);
-        }catch(Throwable t){return null;}
+            for(LinkAddress la:lp.getLinkAddresses()){
+                InetAddress a=la.getAddress();
+                if(a instanceof Inet4Address){
+                    String ip=a.getHostAddress();
+                    if(ip!=null&&ip.startsWith("192.168.50."))return true;
+                }
+            }
+        }catch(Throwable ignored){}
+        return false;
+    }
+
+    private static String transportName(NetworkCapabilities c){
+        if(c.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR))return"CELLULAR";
+        if(c.hasTransport(NetworkCapabilities.TRANSPORT_WIFI))return"WIFI";
+        if(c.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET))return"ETHERNET";
+        return"PHYSICAL";
     }
 
     private void pump(Socket from,Socket to,String name){
@@ -183,8 +185,8 @@ public class GatewayService extends Service {
     private static String shortErr(Throwable t){if(t==null)return"null";String m=t.getMessage();return t.getClass().getSimpleName()+(m==null?"":": "+m);}
 
     private static final class Candidate{
-        final Network network;final String host;final String via;
-        Candidate(Network n,String h,String v){network=n;host=h;via=v;}
+        final Network network;final String host;final int port;final String via;
+        Candidate(Network n,String h,int p,String v){network=n;host=h;port=p;via=v;}
     }
     private static final class PcConnection{
         final Socket socket;final String label;
