@@ -42,7 +42,7 @@ public class MainActivity extends Activity {
         ScrollView sv=new ScrollView(this);
         LinearLayout root=new LinearLayout(this); root.setOrientation(LinearLayout.VERTICAL); root.setPadding(dp(20),dp(24),dp(20),dp(30)); sv.addView(root);
         TextView title=new TextView(this); title.setText("ON Roon NetShare Bridge"); title.setTextSize(24); title.setTextColor(Color.BLACK); title.setTypeface(null,1); root.addView(title);
-        TextView sub=new TextView(this); sub.setText("R8 II sidecar · NetShare VPN 유지 · 자체 VPN 없음 · v1.6 REAL ROON"); sub.setTextSize(14); sub.setPadding(0,dp(4),0,dp(18)); root.addView(sub);
+        TextView sub=new TextView(this); sub.setText("R8 II sidecar · NetShare VPN 유지 · 자체 VPN 없음 · v1.7 LOCAL SOOD INJECT"); sub.setTextSize(14); sub.setPadding(0,dp(4),0,dp(18)); root.addView(sub);
         addRow(root,"APP","앱 구조"); addRow(root,"PROXY","S26 Gateway"); addRow(root,"RELAY","PC Relay"); addRow(root,"DISCOVERY","Roon discovery"); addRow(root,"CORE","Roon Core"); addRow(root,"OUTPUT","R8 Output 경로");
         Button restart=new Button(this); restart.setText("연결 유지 · 상태 다시 확인");
         restart.setOnClickListener(v->{ startBridge(); appendLog("BridgeService 유지 · 자동복구/heartbeat 계속 사용"); Toast.makeText(this,"브리지 연결을 유지합니다.",Toast.LENGTH_SHORT).show(); }); root.addView(restart);
