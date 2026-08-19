@@ -1,3 +1,4 @@
+# FINAL v2.2: PC-side direct Roon Ready announcement; R8/S26 unchanged.
 import socket, threading, time, uuid
 from collections import OrderedDict
 import roon_netshare_relay as base
