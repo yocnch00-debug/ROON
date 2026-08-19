@@ -47,9 +47,9 @@ public class MainActivity extends Activity {
         LinearLayout root=new LinearLayout(this); root.setOrientation(LinearLayout.VERTICAL); root.setPadding(dp(20),dp(24),dp(20),dp(30));
         sv.addView(root);
         TextView title=new TextView(this); title.setText("ON Roon NetShare Bridge"); title.setTextSize(24); title.setTextColor(Color.BLACK); title.setTypeface(null,1); root.addView(title);
-        TextView sub=new TextView(this); sub.setText("R8 II sidecar · NetShare VPN 유지 · 자체 VPN 없음"); sub.setTextSize(14); sub.setPadding(0,dp(4),0,dp(18)); root.addView(sub);
+        TextView sub=new TextView(this); sub.setText("R8 II sidecar · NetShare VPN 유지 · 자체 VPN 없음 · v1.3"); sub.setTextSize(14); sub.setPadding(0,dp(4),0,dp(18)); root.addView(sub);
         addRow(root,"APP","앱 구조");
-        addRow(root,"PROXY","NetShare Proxy");
+        addRow(root,"PROXY","S26 Gateway");
         addRow(root,"RELAY","PC Relay");
         addRow(root,"DISCOVERY","Roon discovery");
         addRow(root,"CORE","Roon Core");
@@ -64,7 +64,7 @@ public class MainActivity extends Activity {
         TextView v=new TextView(this); v.setText("○  "+name+"\n    대기"); v.setTextSize(16); v.setPadding(dp(4),dp(9),dp(4),dp(9)); root.addView(v); rows.put(key,v);
     }
     private String label(String k) {
-        switch(k){case"APP":return"앱 구조";case"PROXY":return"NetShare Proxy";case"RELAY":return"PC Relay";case"DISCOVERY":return"Roon discovery";case"CORE":return"Roon Core";case"OUTPUT":return"R8 Output 경로";default:return k;}
+        switch(k){case"APP":return"앱 구조";case"PROXY":return"S26 Gateway";case"RELAY":return"PC Relay";case"DISCOVERY":return"Roon discovery";case"CORE":return"Roon Core";case"OUTPUT":return"R8 Output 경로";default:return k;}
     }
     private void appendLog(String s){ if(s==null)return; String old=logView.getText().toString(); String line=tf.format(new Date())+"  "+s+"\n"; if(old.length()>12000)old=old.substring(old.length()-8000); logView.setText(old+line); }
     private void startBridge(){ Intent i=new Intent(this,BridgeService.class); if(Build.VERSION.SDK_INT>=26)startForegroundService(i);else startService(i); }
