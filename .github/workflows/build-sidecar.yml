@@ -42,14 +42,16 @@ jobs:
         run: |
           base64 -d android-sidecar/onroonlink-test.jks.b64 > android-sidecar/onroonlink-test.jks
           cp android-sidecar/onroonlink-test.jks android-s26-gateway/onroonlink-test.jks
-      - name: Static final-route checks
+      - name: Static real-Roon checks
         run: |
           if grep -R 'bindSocket(' android-s26-gateway/app/src/main/java; then echo 'S26 must not use Network.bindSocket'; exit 1; fi
-          grep -q 'sanitizeQueryForRelay' android-sidecar/app/src/main/java/com/onroonlink/sidecar/SoodCodec.java
-          grep -q '_replyaddr' android-sidecar/app/src/main/java/com/onroonlink/sidecar/SoodCodec.java
-          grep -q 'listInterfaceRoutes' android-sidecar/app/src/main/java/com/onroonlink/sidecar/BridgeService.java
+          grep -q 'SOOD_PACKET_PC=20' android-sidecar/app/src/main/java/com/onroonlink/sidecar/TunnelMux.java
+          grep -q 'SOOD_PACKET_R8=21' android-sidecar/app/src/main/java/com/onroonlink/sidecar/TunnelMux.java
+          grep -q 'Roon SOOD 양방향 브리지' android-sidecar/app/src/main/java/com/onroonlink/sidecar/BridgeService.java
+          grep -q 'ensureR8Forwarder' android-sidecar/app/src/main/java/com/onroonlink/sidecar/BridgeService.java
+          grep -q 'OPEN_PC' android-sidecar/app/src/main/java/com/onroonlink/sidecar/BridgeService.java
           grep -q 'stopService' android-sidecar/app/src/main/java/com/onroonlink/sidecar/MainActivity.java && { echo 'Destructive restart still present'; exit 1; } || true
-          grep -q 'v1.5 RECONNECT FIX' android-sidecar/app/src/main/java/com/onroonlink/sidecar/MainActivity.java
+          grep -q 'v1.6 REAL ROON' android-sidecar/app/src/main/java/com/onroonlink/sidecar/MainActivity.java
       - name: Build R8 APK
         working-directory: android-sidecar
         run: gradle --no-daemon :app:assembleDebug
@@ -74,14 +76,14 @@ jobs:
       - name: Package Android artifacts
         run: |
           mkdir -p out
-          cp android-sidecar/app/build/outputs/apk/debug/app-debug.apk out/ON-Roon-NetShare-R8-Sidecar-v1.5-RECONNECT-FIX.apk
+          cp android-sidecar/app/build/outputs/apk/debug/app-debug.apk out/ON-Roon-NetShare-R8-Sidecar-v1.6-REAL-ROON.apk
           cp android-s26-gateway/app/build/outputs/apk/debug/app-debug.apk out/ON-Roon-S26-Gateway-v1.6-FINAL.apk
-          sha256sum out/ON-Roon-NetShare-R8-Sidecar-v1.5-RECONNECT-FIX.apk > out/ON-Roon-NetShare-R8-Sidecar-v1.5-RECONNECT-FIX.sha256.txt
+          sha256sum out/ON-Roon-NetShare-R8-Sidecar-v1.6-REAL-ROON.apk > out/ON-Roon-NetShare-R8-Sidecar-v1.6-REAL-ROON.sha256.txt
           sha256sum out/ON-Roon-S26-Gateway-v1.6-FINAL.apk > out/ON-Roon-S26-Gateway-v1.6-FINAL.sha256.txt
           cp r8-manifest.txt s26-manifest.txt out/
       - uses: actions/upload-artifact@v4
         with:
-          name: ON-Roon-NetShare-R8-v1.5-RECONNECT-FIX-S26-v1.6
+          name: ON-Roon-NetShare-R8-v1.6-REAL-ROON-S26-v1.6
           path: out/
 
   windows-relay:
@@ -93,17 +95,25 @@ jobs:
           python-version: '3.12'
       - name: Install PyInstaller
         run: python -m pip install --disable-pip-version-check pyinstaller==6.15.0
+      - name: Static real-Roon checks
+        shell: bash
+        run: |
+          grep -q 'SOOD_PACKET_PC=20' pc-relay/roon_netshare_relay.py
+          grep -q 'SOOD_PACKET_R8=21' pc-relay/roon_netshare_relay.py
+          grep -q 'active_core_probe_loop' pc-relay/roon_netshare_relay.py
+          grep -q 'ROON CORE FOUND REAL' pc-relay/roon_netshare_relay.py
+          grep -q 'R8 OUTPUT REAL' pc-relay/roon_netshare_relay.py
       - name: Syntax check
         run: python -m py_compile pc-relay/roon_netshare_relay.py
       - name: Build PC Relay
-        run: pyinstaller --clean --onefile --name ON-Roon-NetShare-PC-Relay-v1.3-KEYLESS pc-relay/roon_netshare_relay.py
+        run: pyinstaller --clean --onefile --name ON-Roon-NetShare-PC-Relay-v1.4-REAL-ROON pc-relay/roon_netshare_relay.py
       - name: Package Relay artifact
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force out | Out-Null
-          Copy-Item dist/ON-Roon-NetShare-PC-Relay-v1.3-KEYLESS.exe out/
-          (Get-FileHash out/ON-Roon-NetShare-PC-Relay-v1.3-KEYLESS.exe -Algorithm SHA256).Hash | Out-File out/ON-Roon-NetShare-PC-Relay-v1.3-KEYLESS.sha256.txt
+          Copy-Item dist/ON-Roon-NetShare-PC-Relay-v1.4-REAL-ROON.exe out/
+          (Get-FileHash out/ON-Roon-NetShare-PC-Relay-v1.4-REAL-ROON.exe -Algorithm SHA256).Hash | Out-File out/ON-Roon-NetShare-PC-Relay-v1.4-REAL-ROON.sha256.txt
       - uses: actions/upload-artifact@v4
         with:
-          name: ON-Roon-NetShare-PC-Relay-KEYLESS-v1.3
+          name: ON-Roon-NetShare-PC-Relay-v1.4-REAL-ROON
           path: out/
