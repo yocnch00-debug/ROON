@@ -1,4 +1,4 @@
-name: Build ON Roon FINAL v2
+name: Build ON Roon FINAL v2.1
 
 on:
   push:
@@ -8,6 +8,7 @@ on:
       - 'android-s26-gateway/**'
       - 'pc-relay/roon_netshare_relay.py'
       - 'pc-relay/roon_netshare_relay_v2.py'
+      - 'tools/patch-r8-v19-stable-tunnel.py'
       - '.github/workflows/build-sidecar.yml'
   pull_request:
     branches: [ main ]
@@ -16,6 +17,7 @@ on:
       - 'android-s26-gateway/**'
       - 'pc-relay/roon_netshare_relay.py'
       - 'pc-relay/roon_netshare_relay_v2.py'
+      - 'tools/patch-r8-v19-stable-tunnel.py'
       - '.github/workflows/build-sidecar.yml'
   workflow_dispatch:
 
@@ -41,17 +43,21 @@ jobs:
         run: |
           base64 -d android-sidecar/onroonlink-test.jks.b64 > android-sidecar/onroonlink-test.jks
           cp android-sidecar/onroonlink-test.jks android-s26-gateway/onroonlink-test.jks
-      - name: FINAL architecture checks
+      - name: Apply R8 stable tunnel patch
+        run: python3 tools/patch-r8-v19-stable-tunnel.py
+      - name: FINAL v2.1 architecture checks
         run: |
           grep -q '2.0-final-transport-only' android-s26-gateway/app/build.gradle.kts
           grep -q 'TRANSPORT ONLY' android-s26-gateway/app/src/main/java/com/onroonlink/s26gateway/GatewayService.java
-          grep -q '주소 저장 · 연결 유지' android-s26-gateway/app/src/main/java/com/onroonlink/s26gateway/MainActivity.java
           if grep -Eq 'DatagramSocket|MulticastSocket|joinGroup|bindSocket\(' android-s26-gateway/app/src/main/java/com/onroonlink/s26gateway/GatewayService.java; then echo 'S26 must be transport-only'; exit 1; fi
-          if grep -Eq 'CHANGE_WIFI_MULTICAST_STATE|BIND_VPN_SERVICE|VpnService' android-s26-gateway/app/src/main/AndroidManifest.xml; then echo 'S26 manifest contains forbidden discovery/VPN pieces'; exit 1; fi
+          if grep -Eq 'CHANGE_WIFI_MULTICAST_STATE|BIND_VPN_SERVICE|VpnService' android-s26-gateway/app/src/main/AndroidManifest.xml; then echo 'S26 manifest contains discovery/VPN pieces'; exit 1; fi
           if grep -q 'stopService' android-s26-gateway/app/src/main/java/com/onroonlink/s26gateway/MainActivity.java; then echo 'S26 destructive restart found'; exit 1; fi
-          grep -q '1.8-STATEFUL-ENDPOINT' android-sidecar/app/src/main/java/com/onroonlink/sidecar/BridgeService.java
+          grep -q '1.9-STABLE-TUNNEL' android-sidecar/app/src/main/java/com/onroonlink/sidecar/BridgeService.java
+          grep -q 'versionName = "1.9-stable-tunnel"' android-sidecar/app/build.gradle.kts
           grep -q 'proxyPcSoodQuery' android-sidecar/app/src/main/java/com/onroonlink/sidecar/BridgeService.java
           grep -q 'OPEN_PC' android-sidecar/app/src/main/java/com/onroonlink/sidecar/BridgeService.java
+          grep -q 'TunnelMux.PING' android-sidecar/app/src/main/java/com/onroonlink/sidecar/BridgeService.java
+          if grep -q 'heartbeat timeout' android-sidecar/app/src/main/java/com/onroonlink/sidecar/BridgeService.java; then echo 'False heartbeat disconnect remains'; exit 1; fi
       - name: Build R8 Sidecar
         working-directory: android-sidecar
         run: gradle --no-daemon :app:assembleDebug
@@ -69,13 +75,13 @@ jobs:
       - name: Package Android
         run: |
           mkdir -p out
-          cp android-sidecar/app/build/outputs/apk/debug/app-debug.apk out/ON-Roon-NetShare-R8-Sidecar-v1.8-STATEFUL-ENDPOINT.apk
+          cp android-sidecar/app/build/outputs/apk/debug/app-debug.apk out/ON-Roon-NetShare-R8-Sidecar-v1.9-STABLE-TUNNEL.apk
           cp android-s26-gateway/app/build/outputs/apk/debug/app-debug.apk out/ON-Roon-S26-Transport-v2.0-FINAL.apk
           sha256sum out/* > out/SHA256SUMS.txt
-          printf '%s\n' 'FINAL 2.0 architecture' 'PC Relay handles PC-local Roon discovery.' 'S26 is TCP transport only.' 'R8 Sidecar queries local HiBy Roon Ready and tunnels dynamic RAAT TCP.' 'Existing PHONE RoonLink and NetShare remain unchanged.' > out/INSTALL.txt
+          printf '%s\n' 'FINAL 2.1 architecture' 'PC Relay forwards every observed SOOD query to R8 and returns to its exact requester socket.' 'S26 is TCP transport only.' 'R8 keeps PING keepalive but no longer tears down a tunnel only because PONG is late.' 'Dynamic Roon Ready TCP/RAAT ports remain proxied over the same tunnel.' > out/INSTALL.txt
       - uses: actions/upload-artifact@v4
         with:
-          name: ON-Roon-FINAL-v2-Android
+          name: ON-Roon-FINAL-v2.1-Android
           path: out/
 
   windows-relay:
@@ -85,7 +91,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: FINAL relay unit checks
+      - name: FINAL v2.1 relay unit checks
         shell: bash
         run: |
           python -m py_compile pc-relay/roon_netshare_relay.py pc-relay/roon_netshare_relay_v2.py
@@ -94,31 +100,31 @@ jobs:
           sys.path.insert(0,'pc-relay')
           import roon_netshare_relay as b
           import roon_netshare_relay_v2 as v
-          assert v.is_local_query_source(b.PC_LAN_IP)
-          assert not v.is_local_query_source('192.168.50.226')
           q=b.encode_sood('Q',{'_tid':'test-tid','query_service_id':None})
-          assert v.process_local_query(q,(b.PC_LAN_IP,45678)) is not None
-          assert v.process_local_query(q,('192.168.50.226',45678)) is None
+          assert v.process_query(q,(b.PC_LAN_IP,45678)) is not None
+          assert v.process_query(q,('10.89.0.2',38299)) is not None
+          assert v.process_query(q,('192.168.50.226',45678)) is not None
           r=b.encode_sood('R',{'service_id':'5e2042ad-9bc5-4508-be92-ff68f19bdc93','tcp_port':'46719'})
           rr=b.rewrite_ports(r,lambda prop,p:12345)
           p=b.parse_sood(rr)
           assert p and p[1]['tcp_port']=='12345'
-          print('FINAL v2 local-only discovery + dynamic port rewrite tests PASS')
+          print('FINAL v2.1 any-source discovery + dynamic port rewrite tests PASS')
           PY
-          if grep -q 'S26Q' pc-relay/roon_netshare_relay_v2.py; then echo 'v2 must not depend on S26 discovery controls'; exit 1; fi
-          grep -q 'PC ROON LOCAL QUERY -> R8' pc-relay/roon_netshare_relay_v2.py
-          grep -q 'ROON READY DELIVERED TO REAL PC SOCKET' pc-relay/roon_netshare_relay_v2.py
+          grep -q '2.1-FINAL-ANY-SOURCE' pc-relay/roon_netshare_relay_v2.py
+          grep -q 'PC ROON QUERY -> R8' pc-relay/roon_netshare_relay_v2.py
+          grep -q 'ROON READY DELIVERED TO REQUESTER' pc-relay/roon_netshare_relay_v2.py
+          if grep -q 'non-local query ignored' pc-relay/roon_netshare_relay_v2.py; then echo 'Old source filter still present'; exit 1; fi
       - name: Install PyInstaller
         run: python -m pip install --disable-pip-version-check pyinstaller==6.15.0
-      - name: Build PC Relay v2
-        run: pyinstaller --clean --onefile --paths pc-relay --name ON-Roon-NetShare-PC-Relay-v2.0-FINAL pc-relay/roon_netshare_relay_v2.py
+      - name: Build PC Relay v2.1
+        run: pyinstaller --clean --onefile --paths pc-relay --name ON-Roon-NetShare-PC-Relay-v2.1-FINAL pc-relay/roon_netshare_relay_v2.py
       - name: Package PC Relay
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force out | Out-Null
-          Copy-Item dist/ON-Roon-NetShare-PC-Relay-v2.0-FINAL.exe out/
-          (Get-FileHash out/ON-Roon-NetShare-PC-Relay-v2.0-FINAL.exe -Algorithm SHA256).Hash | Out-File out/ON-Roon-NetShare-PC-Relay-v2.0-FINAL.sha256.txt
+          Copy-Item dist/ON-Roon-NetShare-PC-Relay-v2.1-FINAL.exe out/
+          (Get-FileHash out/ON-Roon-NetShare-PC-Relay-v2.1-FINAL.exe -Algorithm SHA256).Hash | Out-File out/ON-Roon-NetShare-PC-Relay-v2.1-FINAL.sha256.txt
       - uses: actions/upload-artifact@v4
         with:
-          name: ON-Roon-FINAL-v2-PC-Relay
+          name: ON-Roon-FINAL-v2.1-PC-Relay
           path: out/
