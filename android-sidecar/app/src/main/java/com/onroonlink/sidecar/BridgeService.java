@@ -21,13 +21,8 @@ public class BridgeService extends Service {
     private static final String CORE_SERVICE="00720724-5143-4a9b-abac-0e50cba674bb";
 
     private final ExecutorService workers=Executors.newCachedThreadPool();
-    private final AtomicInteger nextStream=new AtomicInteger(1);
     private final ConcurrentHashMap<Integer,Socket> streams=new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<Integer,String> streamRoles=new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<String,Integer> forwardPorts=new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<String,ServerSocket> forwardServers=new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<String,Long> injectedKeys=new ConcurrentHashMap<>();
-    private final AtomicBoolean soodRunning=new AtomicBoolean(false);
+    private final ConcurrentHashMap<String,Long> querySeen=new ConcurrentHashMap<>();
     private final AtomicLong tunnelEpoch=new AtomicLong(0);
 
     private volatile boolean running=true;
@@ -43,11 +38,10 @@ public class BridgeService extends Service {
         startForeground(1007,notification("시작 중"));
         WifiManager wm=(WifiManager)getApplicationContext().getSystemService(WIFI_SERVICE);
         if(wm!=null){
-            multicastLock=wm.createMulticastLock("ON-Roon-NetShare-Bridge");
+            multicastLock=wm.createMulticastLock("ON-Roon-Stateful-Endpoint");
             multicastLock.setReferenceCounted(false);
             try{multicastLock.acquire();}catch(Throwable ignored){}
         }
-        if(soodRunning.compareAndSet(false,true))workers.execute(this::soodListenerLoop);
         workers.execute(this::mainLoop);
     }
 
@@ -56,15 +50,17 @@ public class BridgeService extends Service {
 
     @Override public void onDestroy(){
         running=false;tunnelEpoch.incrementAndGet();closeTunnel();
-        for(Socket s:streams.values())closeQuiet(s);streams.clear();streamRoles.clear();
-        for(ServerSocket ss:forwardServers.values())closeQuiet(ss);forwardServers.clear();forwardPorts.clear();
+        for(Socket s:streams.values())closeQuiet(s);streams.clear();
         workers.shutdownNow();
         try{if(multicastLock!=null&&multicastLock.isHeld())multicastLock.release();}catch(Throwable ignored){}
         super.onDestroy();
     }
 
     private void mainLoop(){
-        status("APP","OK","일반 Android 앱 · VpnService/TUN 없음 · Roon SOOD 양방향 브리지");
+        status("APP","OK","일반 Android 앱 · NetShare VPN 유지 · Stateful Roon Ready endpoint proxy");
+        status("DISCOVERY","WAIT","PC Roon의 Roon Ready 질의 대기");
+        status("CORE","WAIT","HiBy Roon Ready 응답 대기");
+        status("OUTPUT","WAIT","실제 RAAT/TCP 연결 대기");
         while(running){
             try{
                 WifiRoute route=findWifiRoute();
@@ -87,7 +83,7 @@ public class BridgeService extends Service {
 
         long epoch=tunnelEpoch.incrementAndGet();tunnelSocket=s;
         TunnelMux tm=new TunnelMux(s);mux=tm;lastPongAt=System.currentTimeMillis();
-        tm.sendText(TunnelMux.HELLO,0,"R8II|ON-SIDECAR|1.6-REAL-ROON");
+        tm.sendText(TunnelMux.HELLO,0,"R8II|ON-SIDECAR|1.8-STATEFUL-ENDPOINT");
         workers.execute(()->heartbeatLoop(epoch,tm,s));
         tm.readLoop((type,sid,payload)->onFrame(tm,type,sid,payload));
         throw new EOFException("S26 Gateway/PC Relay 연결 종료");
@@ -113,23 +109,19 @@ public class BridgeService extends Service {
                 else log("PC: "+s);
                 return;
             }
-            case TunnelMux.SOOD_PACKET_PC:{
-                TunnelMux.EndpointPacket ep=TunnelMux.decodeEndpointPacket(payload);
-                workers.execute(()->injectPcSood(ep));return;
-            }
-            case TunnelMux.SOOD_RESPONSE_PC:
             case TunnelMux.SOOD_QUERY_PC:{
                 TunnelMux.EndpointPacket ep=TunnelMux.decodeEndpointPacket(payload);
-                workers.execute(()->injectPcSood(ep));return;
+                workers.execute(()->proxyPcSoodQuery(source,ep));return;
+            }
+            case TunnelMux.SOOD_PACKET_PC:{
+                TunnelMux.EndpointPacket ep=TunnelMux.decodeEndpointPacket(payload);
+                SoodCodec.Message m=SoodCodec.parse(ep.packet);
+                if(m!=null&&m.type=='Q')workers.execute(()->proxyPcSoodQuery(source,ep));
+                return;
             }
             case TunnelMux.OPEN_PC:{
                 TunnelMux.EndpointPacket ep=TunnelMux.decodeEndpointPacket(payload);
                 workers.execute(()->openPcToR8(source,sid,ep.ip,ep.port));return;
-            }
-            case TunnelMux.OPEN_OK:{
-                String role=streamRoles.get(sid);
-                if("CORE".equals(role))status("CORE","OK","R8 Roon ↔ PC Core 실제 TCP 연결됨");
-                return;
             }
             case TunnelMux.DATA:{
                 Socket ds=streams.get(sid);
@@ -137,130 +129,87 @@ public class BridgeService extends Service {
                 return;
             }
             case TunnelMux.CLOSE:closeStream(sid,false);return;
-            case TunnelMux.OPEN_ERR:{
-                String role=streamRoles.get(sid);
-                if("CORE".equals(role))status("CORE","WAIT","Core TCP 실패: "+new String(payload,StandardCharsets.UTF_8));
-                log("스트림 실패 id="+sid+" "+new String(payload,StandardCharsets.UTF_8));closeStream(sid,false);return;
-            }
+            case TunnelMux.OPEN_ERR:
+                log("PC stream failed id="+sid+" "+new String(payload,StandardCharsets.UTF_8));closeStream(sid,false);return;
             default:return;
         }
     }
 
-    private void soodListenerLoop(){
-        try{
-            while(running){
-                try(MulticastSocket ms=new MulticastSocket(null)){
-                    ms.setReuseAddress(true);ms.bind(new InetSocketAddress(SoodCodec.PORT));ms.setSoTimeout(900);
-                    InetSocketAddress group=new InetSocketAddress(InetAddress.getByName(SoodCodec.GROUP),SoodCodec.PORT);
-                    LinkedHashMap<String,NetworkInterface> ifs=new LinkedHashMap<>();
-                    for(InterfaceRoute r:listInterfaceRoutes())ifs.put(r.iface.getName(),r.iface);
-                    ArrayList<String> joined=new ArrayList<>();
-                    for(NetworkInterface ni:ifs.values()){
-                        try{ms.joinGroup(group,ni);joined.add(ni.getName());}catch(Throwable t){log("SOOD join skip "+ni.getName()+": "+shortErr(t));}
-                    }
-                    if(joined.isEmpty())throw new IOException("SOOD multicast join 가능한 IPv4 인터페이스 없음");
-                    String sig=interfaceSignature();log("SOOD 9003 양방향 수신 → "+String.join(",",joined));
-                    byte[] buf=new byte[65535];long nextCheck=System.currentTimeMillis()+3000;
-                    while(running){
-                        DatagramPacket p=new DatagramPacket(buf,buf.length);
-                        try{ms.receive(p);}catch(SocketTimeoutException ignored){}
-                        if(p.getLength()>0){
-                            byte[] data=Arrays.copyOfRange(p.getData(),p.getOffset(),p.getOffset()+p.getLength());
-                            SoodCodec.Message m=SoodCodec.parse(data);
-                            if(m!=null&&!isInjected(data,p.getPort())){
-                                TunnelMux tm=mux;
-                                if(tm!=null){
-                                    byte[] safe=(m.type=='Q')?SoodCodec.sanitizeQueryForRelay(data):SoodCodec.sanitizeResponseForRelay(data);
-                                    tm.send(TunnelMux.SOOD_PACKET_R8,0,TunnelMux.endpointPacket(p.getAddress().getHostAddress(),p.getPort(),safe));
-                                    if(m.type=='Q')status("DISCOVERY","OK","R8 Roon SOOD query → PC 전달");
-                                    else status("OUTPUT","OK","R8 SOOD/RAAT 광고 → PC 전달");
-                                }
-                            }
-                        }
-                        long now=System.currentTimeMillis();cleanupInjected(now);
-                        if(now>=nextCheck){nextCheck=now+3000;if(!sig.equals(interfaceSignature())){log("SOOD 인터페이스 변경 · listener 재구성");break;}}
-                    }
-                }catch(Throwable t){if(running)log("SOOD listener 재시작: "+shortErr(t));sleep(800);}
-            }
-        }finally{soodRunning.set(false);}
-    }
+    private void proxyPcSoodQuery(TunnelMux source,TunnelMux.EndpointPacket req){
+        if(source!=mux)return;
+        SoodCodec.Message q=SoodCodec.parse(req.packet);
+        if(q==null||q.type!='Q')return;
+        String tid=q.props.get("_tid");
+        String qsvc=q.props.get("query_service_id");
+        String dedupe=req.ip+":"+req.port+":"+Arrays.hashCode(req.packet);
+        long now=System.currentTimeMillis();
+        Long old=querySeen.put(dedupe,now+1200);
+        if(old!=null&&old>now)return;
+        cleanupQueries(now);
 
-    private void injectPcSood(TunnelMux.EndpointPacket ep){
-        try{
-            SoodCodec.Message m=SoodCodec.parse(ep.packet);if(m==null)return;
-            byte[] out;
-            if(m.type=='Q')out=SoodCodec.sanitizeQueryForRelay(ep.packet);
-            else out=SoodCodec.rewritePorts(SoodCodec.sanitizeResponseForRelay(ep.packet),(prop,p)->ensureR8Forwarder(ep.ip,p));
+        status("DISCOVERY","OK","PC Roon SOOD 질의 → HiBy Roon Ready · "+(qsvc==null?"service=?":qsvc));
+        log("PC→R8 SOOD query · src="+req.ip+":"+req.port+" · service="+qsvc+" · tid="+tid);
 
-            int sent=0;
-            ArrayList<InterfaceRoute> routes=listInterfaceRoutes();
-            for(InterfaceRoute r:routes)if(sendSoodOnRoute(r,out))sent++;
-            if(sendSoodOnRoute(null,out))sent++;
-
-            if(m.type!='Q'){
-                String svc=m.props.get("service_id");
-                if(CORE_SERVICE.equals(svc)){
-                    status("DISCOVERY","OK","PC Roon Core SOOD → R8 주입 성공 · "+ep.ip+" · "+sent+"경로");
-                    status("CORE","WAIT","Core 발견됨 · R8 Roon 실제 TCP 접속 대기");
-                }
-            }
-        }catch(Throwable t){log("PC→R8 SOOD 주입 실패: "+shortErr(t));}
-    }
-
-    private boolean sendSoodOnRoute(InterfaceRoute route,byte[] data){
+        int answers=0;
         try(MulticastSocket s=new MulticastSocket(null)){
             s.setReuseAddress(true);s.setBroadcast(true);s.setTimeToLive(1);
-            if(route==null)s.bind(new InetSocketAddress(0));
-            else{s.bind(new InetSocketAddress(route.address,0));try{s.setNetworkInterface(route.iface);}catch(Throwable ignored){}}
-            int sourcePort=s.getLocalPort();markInjected(data,sourcePort);
-            s.send(new DatagramPacket(data,data.length,InetAddress.getByName(SoodCodec.GROUP),SoodCodec.PORT));
-            if(route!=null&&route.broadcast!=null)try{s.send(new DatagramPacket(data,data.length,route.broadcast,SoodCodec.PORT));}catch(Throwable ignored){}
-            return true;
-        }catch(Throwable t){if(route!=null)log("SOOD inject "+route.iface.getName()+": "+shortErr(t));return false;}
-    }
+            s.bind(new InetSocketAddress(0));s.setSoTimeout(120);
+            int sourcePort=s.getLocalPort();
 
-    private synchronized int ensureR8Forwarder(String remoteIp,int remotePort)throws Exception{
-        String key=remoteIp+":"+remotePort;Integer old=forwardPorts.get(key);if(old!=null)return old;
-        ServerSocket ss=new ServerSocket();ss.setReuseAddress(true);ss.bind(new InetSocketAddress("0.0.0.0",0));
-        int localPort=ss.getLocalPort();forwardPorts.put(key,localPort);forwardServers.put(key,ss);
-        log("R8 local TCP "+localPort+" → PC Roon "+key);
-        workers.execute(()->{
-            try{
-                while(running&&!ss.isClosed()){
-                    Socket local=ss.accept();local.setTcpNoDelay(true);local.setKeepAlive(true);
-                    int sid=nextOddStream();streams.put(sid,local);streamRoles.put(sid,"CORE");
-                    TunnelMux tm=mux;if(tm==null){closeStream(sid,false);continue;}
-                    tm.send(TunnelMux.OPEN_R8,sid,TunnelMux.endpoint(remoteIp,remotePort));
-                    status("CORE","WAIT","R8 Roon이 Core TCP 연결 시도 → "+remoteIp+":"+remotePort);
-                    workers.execute(()->pumpToTunnel(sid,local));
-                }
-            }catch(Throwable t){if(running&&!ss.isClosed())log("R8 forwarder "+localPort+": "+shortErr(t));}
-            finally{closeQuiet(ss);forwardServers.remove(key,ss);forwardPorts.remove(key,localPort);}
-        });
-        return localPort;
+            s.send(new DatagramPacket(req.packet,req.packet.length,InetAddress.getByName("127.0.0.1"),SoodCodec.PORT));
+
+            for(InterfaceRoute r:listInterfaceRoutes()){
+                try{
+                    s.setNetworkInterface(r.iface);
+                    s.send(new DatagramPacket(req.packet,req.packet.length,InetAddress.getByName(SoodCodec.GROUP),SoodCodec.PORT));
+                    if(r.broadcast!=null)s.send(new DatagramPacket(req.packet,req.packet.length,r.broadcast,SoodCodec.PORT));
+                }catch(Throwable t){log("SOOD query "+r.iface.getName()+" skip: "+shortErr(t));}
+            }
+
+            long end=System.currentTimeMillis()+1800;
+            HashSet<String> seenResponses=new HashSet<>();
+            byte[] buf=new byte[65535];
+            while(running&&source==mux&&System.currentTimeMillis()<end){
+                DatagramPacket p=new DatagramPacket(buf,buf.length);
+                try{s.receive(p);}catch(SocketTimeoutException ignored){continue;}
+                byte[] data=Arrays.copyOfRange(p.getData(),p.getOffset(),p.getOffset()+p.getLength());
+                SoodCodec.Message r=SoodCodec.parse(data);
+                if(r==null||r.type=='Q')continue;
+                String rtid=r.props.get("_tid");
+                if(tid!=null&&rtid!=null&&!tid.equals(rtid))continue;
+                if(CORE_SERVICE.equals(r.props.get("service_id")))continue;
+                String sig=p.getAddress().getHostAddress()+":"+p.getPort()+":"+Arrays.hashCode(data);
+                if(!seenResponses.add(sig))continue;
+
+                source.send(TunnelMux.SOOD_RESPONSE_R8,0,TunnelMux.endpointPacket(req.ip,req.port,data));
+                answers++;
+                status("CORE","OK","HiBy Roon Ready 응답 → PC Roon 반환 · "+portSummary(r));
+                log("R8 Roon Ready response · from="+p.getAddress().getHostAddress()+":"+p.getPort()+" · "+propsSummary(r));
+            }
+            log("Stateful SOOD query done · localSrcPort="+sourcePort+" · answers="+answers);
+        }catch(Throwable t){
+            log("Stateful SOOD query 실패: "+shortErr(t));
+        }
+        if(answers==0&&running&&source==mux)status("CORE","WAIT","HiBy Roon Ready 응답 없음 · service="+qsvc);
     }
 
     private void openPcToR8(TunnelMux requestedBy,int sid,String targetIp,int targetPort){
         Socket s=null;
         try{
             if(requestedBy!=mux)throw new IOException("stale tunnel");
-            WifiRoute route=wifi;if(route==null)throw new IOException("Wi-Fi 없음");
-            IOException first=null;
-            if(isLocalIp(targetIp)){
-                try{s=new Socket();s.connect(new InetSocketAddress(targetIp,targetPort),5000);}catch(IOException e){first=e;closeQuiet(s);s=null;}
-                if(s==null){
-                    try{s=new Socket();s.connect(new InetSocketAddress("127.0.0.1",targetPort),5000);}
-                    catch(IOException e){IOException x=new IOException("R8 Output 로컬 연결 실패 [direct="+shortErr(first)+", loopback="+shortErr(e)+"]");if(first!=null)x.addSuppressed(first);throw x;}
-                }
-            }else s=connectWithoutNetworkBind(route.address,targetIp,targetPort,5000);
+            s=new Socket();
+            s.connect(new InetSocketAddress("127.0.0.1",targetPort),5000);
             s.setTcpNoDelay(true);s.setKeepAlive(true);
             if(requestedBy!=mux)throw new IOException("tunnel changed");
-            streams.put(sid,s);streamRoles.put(sid,"OUTPUT");requestedBy.send(TunnelMux.OPEN_OK,sid,new byte[0]);
-            status("OUTPUT","OK","PC Roon ↔ R8 Output 실제 TCP 연결됨 · "+targetIp+":"+targetPort);
+            streams.put(sid,s);requestedBy.send(TunnelMux.OPEN_OK,sid,new byte[0]);
+            status("OUTPUT","OK","PC Roon ↔ HiBy Roon Ready 실제 TCP 연결 · 127.0.0.1:"+targetPort);
+            log("RAAT/TCP OPEN · PC proxy → R8 127.0.0.1:"+targetPort+" · stream="+sid);
             Socket sf=s;workers.execute(()->pumpToTunnel(sid,sf));
         }catch(Throwable t){
-            closeQuiet(s);try{if(requestedBy==mux)requestedBy.sendText(TunnelMux.OPEN_ERR,sid,shortErr(t));}catch(Throwable ignored){}
-            status("OUTPUT","WAIT","R8 Output TCP 실패: "+shortErr(t));closeStream(sid,false);log("R8 Output 스트림 실패: "+shortErr(t));
+            closeQuiet(s);
+            try{if(requestedBy==mux)requestedBy.sendText(TunnelMux.OPEN_ERR,sid,shortErr(t));}catch(Throwable ignored){}
+            status("OUTPUT","WAIT","Roon Ready TCP 실패: "+shortErr(t));
+            closeStream(sid,false);log("R8 Roon Ready stream 실패: "+shortErr(t));
         }
     }
 
@@ -268,18 +217,32 @@ public class BridgeService extends Service {
         byte[] buf=new byte[32768];
         try{
             InputStream in=s.getInputStream();int n;
-            while(running&&(n=in.read(buf))>=0){if(n==0)continue;TunnelMux tm=mux;if(tm==null)break;tm.send(TunnelMux.DATA,sid,Arrays.copyOf(buf,n));}
+            while(running&&(n=in.read(buf))>=0){
+                if(n==0)continue;
+                TunnelMux tm=mux;if(tm==null)break;
+                tm.send(TunnelMux.DATA,sid,Arrays.copyOf(buf,n));
+            }
         }catch(Throwable ignored){}
-        finally{try{TunnelMux tm=mux;if(tm!=null)tm.send(TunnelMux.CLOSE,sid,new byte[0]);}catch(Throwable ignored){}closeStream(sid,false);}
+        finally{
+            try{TunnelMux tm=mux;if(tm!=null)tm.send(TunnelMux.CLOSE,sid,new byte[0]);}catch(Throwable ignored){}
+            closeStream(sid,false);
+        }
     }
 
     private Socket connectWithoutNetworkBind(InetAddress localAddress,String host,int port,int timeout)throws IOException{
         IOException first=null;
-        try{Socket s=new Socket();s.connect(new InetSocketAddress(host,port),timeout);log("TCP 기본 라우팅 성공 → "+host+":"+port);return s;}
-        catch(IOException e){first=e;log("TCP 기본 라우팅 실패: "+shortErr(e)+" · wlan0 소스 바인드 재시도");}
+        try{
+            Socket s=new Socket();s.connect(new InetSocketAddress(host,port),timeout);
+            log("TCP 기본 라우팅 성공 → "+host+":"+port);return s;
+        }catch(IOException e){first=e;log("TCP 기본 라우팅 실패: "+shortErr(e)+" · wlan0 소스 바인드 재시도");}
         Socket s=new Socket();
-        try{s.bind(new InetSocketAddress(localAddress,0));s.connect(new InetSocketAddress(host,port),timeout);log("TCP wlan0 주소 바인드 성공 → "+host+":"+port);return s;}
-        catch(IOException e){closeQuiet(s);IOException x=new IOException("TCP 실패 [기본="+shortErr(first)+", source-bind="+shortErr(e)+"]");if(first!=null)x.addSuppressed(first);throw x;}
+        try{
+            s.bind(new InetSocketAddress(localAddress,0));s.connect(new InetSocketAddress(host,port),timeout);
+            log("TCP wlan0 주소 바인드 성공 → "+host+":"+port);return s;
+        }catch(IOException e){
+            closeQuiet(s);IOException x=new IOException("TCP 실패 [기본="+shortErr(first)+", source-bind="+shortErr(e)+"]");
+            if(first!=null)x.addSuppressed(first);throw x;
+        }
     }
 
     private WifiRoute findWifiRoute(){
@@ -303,51 +266,96 @@ public class BridgeService extends Service {
         try{
             Enumeration<NetworkInterface> en=NetworkInterface.getNetworkInterfaces();
             while(en!=null&&en.hasMoreElements()){
-                NetworkInterface ni=en.nextElement();try{if(!ni.isUp())continue;}catch(Throwable ignored){continue;}
+                NetworkInterface ni=en.nextElement();
+                try{if(!ni.isUp())continue;}catch(Throwable ignored){continue;}
                 Enumeration<InetAddress> ae=ni.getInetAddresses();
                 while(ae.hasMoreElements()){
-                    InetAddress a=ae.nextElement();if(!(a instanceof Inet4Address)||a.isLoopbackAddress())continue;
-                    short prefix=32;for(InterfaceAddress ia:ni.getInterfaceAddresses())if(a.equals(ia.getAddress())){prefix=ia.getNetworkPrefixLength();break;}
-                    InetAddress br=(prefix>=0&&prefix<=30)?broadcast((Inet4Address)a,prefix):null;out.add(new InterfaceRoute(ni,(Inet4Address)a,br));
+                    InetAddress a=ae.nextElement();
+                    if(!(a instanceof Inet4Address)||a.isLoopbackAddress())continue;
+                    short prefix=32;
+                    for(InterfaceAddress ia:ni.getInterfaceAddresses())if(a.equals(ia.getAddress())){prefix=ia.getNetworkPrefixLength();break;}
+                    InetAddress br=(prefix>=0&&prefix<=30)?broadcast((Inet4Address)a,prefix):null;
+                    out.add(new InterfaceRoute(ni,(Inet4Address)a,br));
                 }
             }
         }catch(Throwable t){log("IPv4 인터페이스 탐색: "+shortErr(t));}
         return out;
     }
 
-    private String interfaceSignature(){ArrayList<String>a=new ArrayList<>();for(InterfaceRoute r:listInterfaceRoutes())a.add(r.iface.getName()+"="+r.address.getHostAddress());Collections.sort(a);return String.join("|",a);}
-    private boolean isLocalIp(String ip){try{return isAnyLocalAddress(InetAddress.getByName(ip));}catch(Throwable t){return false;}}
-    private boolean isAnyLocalAddress(InetAddress addr){
-        if(addr==null)return false;if(addr.isLoopbackAddress())return true;
-        try{Enumeration<NetworkInterface> en=NetworkInterface.getNetworkInterfaces();while(en!=null&&en.hasMoreElements()){Enumeration<InetAddress> ae=en.nextElement().getInetAddresses();while(ae.hasMoreElements())if(addr.equals(ae.nextElement()))return true;}}catch(Throwable ignored){}
-        return false;
-    }
-    private static InetAddress broadcast(Inet4Address addr,int prefix){
-        try{byte[] b=addr.getAddress();int ip=((b[0]&255)<<24)|((b[1]&255)<<16)|((b[2]&255)<<8)|(b[3]&255);int mask=prefix==0?0:(int)(0xffffffffL<<(32-prefix));int br=ip|~mask;return InetAddress.getByAddress(new byte[]{(byte)(br>>>24),(byte)(br>>>16),(byte)(br>>>8),(byte)br});}catch(Throwable t){return null;}
+    private static String portSummary(SoodCodec.Message m){
+        ArrayList<String> p=new ArrayList<>();
+        for(Map.Entry<String,String> e:m.props.entrySet()){
+            String k=e.getKey().toLowerCase(Locale.ROOT);
+            if(k.equals("port")||k.endsWith("_port"))p.add(e.getKey()+"="+e.getValue());
+        }
+        return p.isEmpty()?"ports=?":String.join(", ",p);
     }
 
-    private void markInjected(byte[] data,int sourcePort){injectedKeys.put(Arrays.hashCode(data)+"@"+sourcePort,System.currentTimeMillis()+3500);}
-    private boolean isInjected(byte[] data,int sourcePort){String k=Arrays.hashCode(data)+"@"+sourcePort;Long exp=injectedKeys.get(k);if(exp==null)return false;if(exp<System.currentTimeMillis()){injectedKeys.remove(k);return false;}return true;}
-    private void cleanupInjected(long now){for(Map.Entry<String,Long> e:injectedKeys.entrySet())if(e.getValue()<now)injectedKeys.remove(e.getKey(),e.getValue());}
-    private int nextOddStream(){for(;;){int v=nextStream.getAndAdd(2);if(v>0)return v;nextStream.set(1);}}
-    private void closeStream(int id,boolean notify){Socket s=streams.remove(id);streamRoles.remove(id);closeQuiet(s);if(notify)try{TunnelMux tm=mux;if(tm!=null)tm.send(TunnelMux.CLOSE,id,new byte[0]);}catch(Throwable ignored){}}
+    private static String propsSummary(SoodCodec.Message m){
+        String name=m.props.get("name");
+        String svc=m.props.get("service_id");
+        return "name="+name+" · service_id="+svc+" · "+portSummary(m);
+    }
+
+    private void cleanupQueries(long now){
+        for(Map.Entry<String,Long> e:querySeen.entrySet())if(e.getValue()<now)querySeen.remove(e.getKey(),e.getValue());
+    }
+
+    private static InetAddress broadcast(Inet4Address addr,int prefix){
+        try{
+            byte[] b=addr.getAddress();
+            int ip=((b[0]&255)<<24)|((b[1]&255)<<16)|((b[2]&255)<<8)|(b[3]&255);
+            int mask=prefix==0?0:(int)(0xffffffffL<<(32-prefix));int br=ip|~mask;
+            return InetAddress.getByAddress(new byte[]{(byte)(br>>>24),(byte)(br>>>16),(byte)(br>>>8),(byte)br});
+        }catch(Throwable t){return null;}
+    }
+
+    private void closeStream(int id,boolean notify){
+        Socket s=streams.remove(id);closeQuiet(s);
+        if(notify)try{TunnelMux tm=mux;if(tm!=null)tm.send(TunnelMux.CLOSE,id,new byte[0]);}catch(Throwable ignored){}
+    }
+
     private void closeTunnel(){
         tunnelEpoch.incrementAndGet();mux=null;Socket s=tunnelSocket;tunnelSocket=null;closeQuiet(s);
         for(Integer id:new ArrayList<>(streams.keySet()))closeStream(id,false);
-        if(running){status("PROXY","WAIT","S26 Gateway 재연결 대기");status("RELAY","WAIT","PC Relay 재연결 대기");status("DISCOVERY","WAIT","Roon SOOD 대기");status("CORE","WAIT","Roon Core 대기");status("OUTPUT","WAIT","R8 Output 대기");}
+        if(running){
+            status("PROXY","WAIT","S26 Gateway 재연결 대기");
+            status("RELAY","WAIT","PC Relay 재연결 대기");
+            status("DISCOVERY","WAIT","PC Roon SOOD 질의 대기");
+            status("CORE","WAIT","HiBy Roon Ready 응답 대기");
+            status("OUTPUT","WAIT","실제 RAAT/TCP 연결 대기");
+        }
     }
 
     private void status(String key,String state,String detail){
-        Intent i=new Intent(ACTION_STATUS).setPackage(getPackageName());i.putExtra("key",key);i.putExtra("state",state);i.putExtra("detail",detail);sendBroadcast(i);
-        if("RELAY".equals(key)&&"OK".equals(state))((NotificationManager)getSystemService(NOTIFICATION_SERVICE)).notify(1007,notification("PC Relay 연결됨"));
+        Intent i=new Intent(ACTION_STATUS).setPackage(getPackageName());
+        i.putExtra("key",key);i.putExtra("state",state);i.putExtra("detail",detail);sendBroadcast(i);
+        if("RELAY".equals(key)&&"OK".equals(state))
+            ((NotificationManager)getSystemService(NOTIFICATION_SERVICE)).notify(1007,notification("PC Relay 연결됨"));
     }
+
     private void log(String s){status("LOG","",s);}
-    private Notification notification(String text){return new Notification.Builder(this,CHANNEL).setContentTitle("ON Roon NetShare Bridge").setContentText(text).setSmallIcon(android.R.drawable.stat_sys_upload_done).setOngoing(true).build();}
-    private void createChannel(){((NotificationManager)getSystemService(NOTIFICATION_SERVICE)).createNotificationChannel(new NotificationChannel(CHANNEL,"ON Roon Bridge",NotificationManager.IMPORTANCE_LOW));}
+    private Notification notification(String text){
+        return new Notification.Builder(this,CHANNEL)
+                .setContentTitle("ON Roon NetShare Bridge")
+                .setContentText(text)
+                .setSmallIcon(android.R.drawable.stat_sys_upload_done)
+                .setOngoing(true).build();
+    }
+    private void createChannel(){
+        ((NotificationManager)getSystemService(NOTIFICATION_SERVICE))
+                .createNotificationChannel(new NotificationChannel(CHANNEL,"ON Roon Bridge",NotificationManager.IMPORTANCE_LOW));
+    }
     private static void closeQuiet(Closeable c){try{if(c!=null)c.close();}catch(Throwable ignored){}}
     private static void sleep(long ms){try{Thread.sleep(ms);}catch(InterruptedException ignored){Thread.currentThread().interrupt();}}
     private static String shortErr(Throwable t){if(t==null)return"null";String m=t.getMessage();return t.getClass().getSimpleName()+(m==null?"":": "+m);}
 
-    private static final class WifiRoute{final Network network;final NetworkInterface iface;final Inet4Address address;final InetAddress broadcast;WifiRoute(Network n,NetworkInterface i,Inet4Address a,InetAddress b){network=n;iface=i;address=a;broadcast=b;}}
-    private static final class InterfaceRoute{final NetworkInterface iface;final Inet4Address address;final InetAddress broadcast;InterfaceRoute(NetworkInterface i,Inet4Address a,InetAddress b){iface=i;address=a;broadcast=b;}}
+    private static final class WifiRoute{
+        final Network network;final NetworkInterface iface;final Inet4Address address;final InetAddress broadcast;
+        WifiRoute(Network n,NetworkInterface i,Inet4Address a,InetAddress b){network=n;iface=i;address=a;broadcast=b;}
+    }
+    private static final class InterfaceRoute{
+        final NetworkInterface iface;final Inet4Address address;final InetAddress broadcast;
+        InterfaceRoute(NetworkInterface i,Inet4Address a,InetAddress b){iface=i;address=a;broadcast=b;}
+    }
 }
