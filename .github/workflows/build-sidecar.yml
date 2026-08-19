@@ -58,9 +58,10 @@ jobs:
           grep -q 'OPEN_PC' android-sidecar/app/src/main/java/com/onroonlink/sidecar/BridgeService.java
           grep -q 'forwardOriginalRoonQueryToRelay' android-s26-gateway/app/src/main/java/com/onroonlink/s26gateway/GatewayService.java
           grep -q "new byte\[]{'S','2','6','Q'}" android-s26-gateway/app/src/main/java/com/onroonlink/s26gateway/GatewayService.java
+          grep -q 'RAW ROON QUERY' android-s26-gateway/app/src/main/java/com/onroonlink/s26gateway/GatewayService.java
           grep -q '주소 저장 · 연결 유지' android-s26-gateway/app/src/main/java/com/onroonlink/s26gateway/MainActivity.java
           if grep -q 'stopService' android-s26-gateway/app/src/main/java/com/onroonlink/s26gateway/MainActivity.java; then echo 'S26 destructive restart still present'; exit 1; fi
-          grep -q 'versionName = "1.8-origin-preserved-roon-query"' android-s26-gateway/app/build.gradle.kts
+          grep -q 'versionName = "1.9-origin-preserved-raw-sood"' android-s26-gateway/app/build.gradle.kts
       - name: Build R8 APK
         working-directory: android-sidecar
         run: gradle --no-daemon :app:assembleDebug
@@ -80,19 +81,19 @@ jobs:
           $ANDROID_HOME/build-tools/36.0.0/aapt dump xmltree android-sidecar/app/build/outputs/apk/debug/app-debug.apk AndroidManifest.xml > r8-manifest.txt
           $ANDROID_HOME/build-tools/36.0.0/aapt dump xmltree android-s26-gateway/app/build/outputs/apk/debug/app-debug.apk AndroidManifest.xml > s26-manifest.txt
           if grep -qE 'android.net.VpnService|BIND_VPN_SERVICE' r8-manifest.txt s26-manifest.txt; then
-            echo 'Unexpected VPN component found'; cat r8-manifest.txt; cat s26-manifest.txt; exit 1
+            echo 'Unexpected VPN component found'; cat r8-manifest.txt s26-manifest.txt; exit 1
           fi
       - name: Package Android artifacts
         run: |
           mkdir -p out
           cp android-sidecar/app/build/outputs/apk/debug/app-debug.apk out/ON-Roon-NetShare-R8-Sidecar-v1.8-STATEFUL-ENDPOINT.apk
-          cp android-s26-gateway/app/build/outputs/apk/debug/app-debug.apk out/ON-Roon-S26-Gateway-v1.8-ORIGIN-PRESERVED.apk
+          cp android-s26-gateway/app/build/outputs/apk/debug/app-debug.apk out/ON-Roon-S26-Gateway-v1.9-RAW-SOOD-RECOVERY.apk
           sha256sum out/ON-Roon-NetShare-R8-Sidecar-v1.8-STATEFUL-ENDPOINT.apk > out/ON-Roon-NetShare-R8-Sidecar-v1.8-STATEFUL-ENDPOINT.sha256.txt
-          sha256sum out/ON-Roon-S26-Gateway-v1.8-ORIGIN-PRESERVED.apk > out/ON-Roon-S26-Gateway-v1.8-ORIGIN-PRESERVED.sha256.txt
+          sha256sum out/ON-Roon-S26-Gateway-v1.9-RAW-SOOD-RECOVERY.apk > out/ON-Roon-S26-Gateway-v1.9-RAW-SOOD-RECOVERY.sha256.txt
           cp r8-manifest.txt s26-manifest.txt out/
       - uses: actions/upload-artifact@v4
         with:
-          name: ON-Roon-NetShare-R8-v1.8-S26-v1.8-ORIGIN-PRESERVED
+          name: ON-Roon-NetShare-R8-v1.8-S26-v1.9-RAW-SOOD-RECOVERY
           path: out/
 
   windows-relay:
