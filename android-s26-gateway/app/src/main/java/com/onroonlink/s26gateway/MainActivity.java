@@ -15,30 +15,28 @@ import java.util.*;
 public class MainActivity extends Activity {
     private static final String DEFAULT_PC_HOST="121.133.225.83";
     private static final int DEFAULT_PC_PORT=51920;
-    private final Map<String, TextView> rows = new HashMap<>();
+    private final Map<String,TextView> rows=new HashMap<>();
     private TextView logView;
-    private EditText pcHost;
-    private EditText pcPort;
-    private final SimpleDateFormat tf = new SimpleDateFormat("HH:mm:ss", Locale.KOREA);
+    private EditText pcHost,pcPort;
+    private final SimpleDateFormat tf=new SimpleDateFormat("HH:mm:ss",Locale.KOREA);
 
-    private final BroadcastReceiver receiver = new BroadcastReceiver() {
-        @Override public void onReceive(Context c, Intent i) {
-            String key=i.getStringExtra("key"), state=i.getStringExtra("state"), detail=i.getStringExtra("detail");
-            if ("LOG".equals(key)) { appendLog(detail); return; }
-            TextView v=rows.get(key); if(v==null)return;
-            String mark="OK".equals(state)?"●":"○";
-            v.setText(mark+"  "+label(key)+"\n    "+(detail==null?"":detail));
-            v.setTextColor("OK".equals(state)?Color.rgb(20,115,55):Color.rgb(80,80,80));
+    private final BroadcastReceiver receiver=new BroadcastReceiver(){
+        @Override public void onReceive(Context c,Intent i){
+            String key=i.getStringExtra("key"),state=i.getStringExtra("state"),detail=i.getStringExtra("detail");
+            if("LOG".equals(key)){appendLog(detail);return;}
+            TextView v=rows.get(key);if(v==null)return;
+            boolean ok="OK".equals(state);
+            v.setText((ok?"●":"○")+"  "+label(key)+"\n    "+(detail==null?"":detail));
+            v.setTextColor(ok?Color.rgb(20,115,55):Color.rgb(80,80,80));
         }
     };
 
     @Override protected void onCreate(Bundle b){
-        super.onCreate(b);
-        setContentView(makeUi());
-        if(Build.VERSION.SDK_INT>=33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)!=PackageManager.PERMISSION_GRANTED)
+        super.onCreate(b);setContentView(makeUi());
+        if(Build.VERSION.SDK_INT>=33&&checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)!=PackageManager.PERMISSION_GRANTED)
             requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS},21);
         IntentFilter f=new IntentFilter(GatewayService.ACTION_STATUS);
-        if(Build.VERSION.SDK_INT>=33)registerReceiver(receiver,f,RECEIVER_NOT_EXPORTED); else registerReceiver(receiver,f);
+        if(Build.VERSION.SDK_INT>=33)registerReceiver(receiver,f,RECEIVER_NOT_EXPORTED);else registerReceiver(receiver,f);
         startGateway();
     }
 
@@ -47,8 +45,8 @@ public class MainActivity extends Activity {
     private View makeUi(){
         ScrollView sv=new ScrollView(this);
         LinearLayout root=new LinearLayout(this);root.setOrientation(LinearLayout.VERTICAL);root.setPadding(dp(20),dp(24),dp(20),dp(30));sv.addView(root);
-        TextView title=new TextView(this);title.setText("ON Roon S26 Gateway");title.setTextSize(24);title.setTextColor(Color.BLACK);title.setTypeface(null,1);root.addView(title);
-        TextView sub=new TextView(this);sub.setText("기존 PHONE RoonLink/NetShare 그대로 · TCP 경로 유지 · Roon UDP reply-port proxy · v1.7");sub.setTextSize(14);sub.setPadding(0,dp(4),0,dp(14));root.addView(sub);
+        TextView title=new TextView(this);title.setText("ON Roon S26 Transport");title.setTextSize(24);title.setTextColor(Color.BLACK);title.setTypeface(null,1);root.addView(title);
+        TextView sub=new TextView(this);sub.setText("FINAL 2.0 · R8↔PC 전송만 담당 · Roon/SOOD 처리 안 함 · 기존 NetShare/PHONE RoonLink 유지");sub.setTextSize(14);sub.setPadding(0,dp(4),0,dp(14));root.addView(sub);
 
         SharedPreferences sp=getSharedPreferences("gateway",MODE_PRIVATE);
         TextView hostLabel=new TextView(this);hostLabel.setText("PC Relay 외부 주소 / 포트");hostLabel.setTextSize(13);hostLabel.setTypeface(null,1);root.addView(hostLabel);
@@ -57,8 +55,13 @@ public class MainActivity extends Activity {
         pcPort=new EditText(this);pcPort.setSingleLine(true);pcPort.setText(String.valueOf(sp.getInt("pc_port",DEFAULT_PC_PORT)));pcPort.setTextSize(15);pcPort.setInputType(InputType.TYPE_CLASS_NUMBER);
         addrRow.addView(pcHost,new LinearLayout.LayoutParams(0,dp(48),3f));addrRow.addView(pcPort,new LinearLayout.LayoutParams(0,dp(48),1.25f));root.addView(addrRow);
 
-        addRow(root,"APP","앱 구조");addRow(root,"LISTEN","R8 수신");addRow(root,"PC","PC Relay 경로");addRow(root,"R8","R8 연결");addRow(root,"SOOD","Roon UDP 경로");
-        Button restart=new Button(this);restart.setText("주소 저장 + 게이트웨이 다시 시작");restart.setOnClickListener(v->{saveSettings();stopService(new Intent(this,GatewayService.class));new Handler(Looper.getMainLooper()).postDelayed(this::startGateway,700);});root.addView(restart);
+        addRow(root,"APP","앱 구조");addRow(root,"LISTEN","R8 수신");addRow(root,"PC","PC Relay 경로");addRow(root,"R8","R8 연결");
+
+        Button save=new Button(this);save.setText("주소 저장 · 연결 유지");
+        save.setOnClickListener(v->{saveSettings();startGateway();appendLog("주소 저장 완료 · 현재 연결은 끊지 않음");Toast.makeText(this,"주소 저장 완료",Toast.LENGTH_SHORT).show();});
+        root.addView(save);
+
+        TextView note=new TextView(this);note.setText("※ 이 앱은 UDP 9003/Roon discovery를 건드리지 않습니다. Roon 처리는 PC Relay와 R8 Sidecar만 담당합니다.");note.setTextSize(13);note.setPadding(0,dp(10),0,0);root.addView(note);
         TextView lh=new TextView(this);lh.setText("실시간 로그");lh.setTextSize(16);lh.setTypeface(null,1);lh.setPadding(0,dp(18),0,dp(6));root.addView(lh);
         logView=new TextView(this);logView.setTextSize(12);logView.setTextIsSelectable(true);logView.setPadding(dp(10),dp(10),dp(10),dp(10));logView.setBackgroundColor(Color.rgb(245,245,245));root.addView(logView,new LinearLayout.LayoutParams(-1,dp(320)));
         return sv;
@@ -72,7 +75,7 @@ public class MainActivity extends Activity {
     }
 
     private void addRow(LinearLayout root,String key,String name){TextView v=new TextView(this);v.setText("○  "+name+"\n    대기");v.setTextSize(16);v.setPadding(dp(4),dp(9),dp(4),dp(9));root.addView(v);rows.put(key,v);}
-    private String label(String k){switch(k){case"APP":return"앱 구조";case"LISTEN":return"R8 수신";case"PC":return"PC Relay 경로";case"R8":return"R8 연결";case"SOOD":return"Roon UDP 경로";default:return k;}}
+    private String label(String k){switch(k){case"APP":return"앱 구조";case"LISTEN":return"R8 수신";case"PC":return"PC Relay 경로";case"R8":return"R8 연결";default:return k;}}
     private void appendLog(String s){if(s==null||logView==null)return;String old=logView.getText().toString();String line=tf.format(new Date())+"  "+s+"\n";if(old.length()>20000)old=old.substring(old.length()-12000);logView.setText(old+line);}
     private void startGateway(){Intent i=new Intent(this,GatewayService.class);if(Build.VERSION.SDK_INT>=26)startForegroundService(i);else startService(i);}
     private int dp(int x){return(int)(x*getResources().getDisplayMetrics().density+0.5f);}
