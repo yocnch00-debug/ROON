@@ -7,6 +7,7 @@ import java.util.*;
 final class SoodCodec {
     static final int PORT = 9003;
     static final String GROUP = "239.255.90.90";
+    private static final String CORE_SERVICE = "00720724-5143-4a9b-abac-0e50cba674bb";
 
     static final class Message {
         final char type;
@@ -56,10 +57,11 @@ final class SoodCodec {
 
     private static boolean stripResponseTransaction(Message m) {
         boolean changed=stripReplyOverrides(m);
-        // The PC relay's active probe has its own _tid. Do not leak that transaction id into
-        // the R8-local advertisement; Android Roon must see this as a local Core announcement,
-        // not as a response to somebody else's probe.
-        if(m.props.containsKey("_tid")){m.props.remove("_tid");changed=true;}
+        // Only Core responses coming from the PC relay's active probe carry a foreign transaction id
+        // that must not be presented to Android Roon. Leave RAAT/output transaction ids untouched.
+        if(CORE_SERVICE.equals(m.props.get("service_id")) && m.props.containsKey("_tid")){
+            m.props.remove("_tid");changed=true;
+        }
         return changed;
     }
 
