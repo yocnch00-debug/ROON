@@ -47,11 +47,28 @@ final class SoodCodec {
         return b.toByteArray();
     }
 
+    private static boolean stripReplyOverrides(Message m) {
+        boolean changed=false;
+        if(m.props.containsKey("_replyaddr")){m.props.remove("_replyaddr");changed=true;}
+        if(m.props.containsKey("_replyport")){m.props.remove("_replyport");changed=true;}
+        return changed;
+    }
+
+    static byte[] sanitizeQueryForRelay(byte[] data) throws IOException {
+        Message m=parse(data); if(m==null || m.type!='Q')return data;
+        return stripReplyOverrides(m)?encode(m):data;
+    }
+
+    static byte[] sanitizeResponseForRelay(byte[] data) throws IOException {
+        Message m=parse(data); if(m==null || m.type=='Q')return data;
+        return stripReplyOverrides(m)?encode(m):data;
+    }
+
     interface PortMapper { int map(String prop,int original) throws Exception; }
 
     static byte[] rewritePorts(byte[] data, PortMapper mapper) throws Exception {
         Message m=parse(data); if(m==null || m.type=='Q')return data;
-        boolean changed=false;
+        boolean changed=stripReplyOverrides(m);
         for(Map.Entry<String,String> e:new ArrayList<>(m.props.entrySet())){
             String k=e.getKey(), v=e.getValue(), lk=k.toLowerCase(Locale.ROOT);
             if(k.startsWith("_") || !(lk.equals("port") || lk.endsWith("_port")) || v==null)continue;
