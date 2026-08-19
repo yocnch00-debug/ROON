@@ -1,7 +1,7 @@
 import socket, threading, time
 import roon_netshare_relay as base
 
-VERSION="2.0-FINAL-LOCAL-DISCOVERY"
+VERSION="2.0-FINAL-LOCAL-DISCOVERY-R1"
 
 
 def local_ipv4s():
