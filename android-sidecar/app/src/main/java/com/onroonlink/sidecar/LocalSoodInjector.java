@@ -47,18 +47,17 @@ final class LocalSoodInjector {
             int ephem=0;for(int p:ports)if(p>=32768&&p<=65535)ephem++;
             Log.i(TAG,"targets="+targets+" procPorts="+ports.size()+" ephemeral="+ephem);
 
-            // First hit only ports the kernel exposes. This is cheap when /proc/net/udp is readable.
+            // Cheap first pass: sockets currently exposed by the kernel.
             if(!ports.isEmpty())sendPorts(packet,targets,ports);
             if(coreConnected.get())return;
 
-            // Android may hide /proc/net/udp from ordinary apps. In that case, scan the Linux
-            // ephemeral range, but ONLY against this device's own loopback/wlan0/tun0 addresses.
-            if(ephem==0){
-                Log.i(TAG,"/proc UDP ports hidden; local-only ephemeral scan start");
-                for(InetAddress a:targets){
-                    if(coreConnected.get())break;
-                    scanRange(packet,a,32768,60999);
-                }
+            // Do not trust /proc visibility on Android. It can expose only a subset of sockets.
+            // Always fall back to the Linux ephemeral range, but ONLY against this R8's own
+            // loopback/wlan0/tun0 addresses. Stop immediately once the Core TCP opens.
+            Log.i(TAG,"local-only ephemeral scan start");
+            for(InetAddress a:targets){
+                if(coreConnected.get())break;
+                scanRange(packet,a,32768,60999);
             }
         }catch(Throwable t){Log.w(TAG,"inject failed",t);}
         finally{spraying.set(false);}
