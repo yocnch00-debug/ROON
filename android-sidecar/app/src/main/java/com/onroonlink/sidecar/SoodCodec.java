@@ -54,6 +54,15 @@ final class SoodCodec {
         return changed;
     }
 
+    private static boolean stripResponseTransaction(Message m) {
+        boolean changed=stripReplyOverrides(m);
+        // The PC relay's active probe has its own _tid. Do not leak that transaction id into
+        // the R8-local advertisement; Android Roon must see this as a local Core announcement,
+        // not as a response to somebody else's probe.
+        if(m.props.containsKey("_tid")){m.props.remove("_tid");changed=true;}
+        return changed;
+    }
+
     static byte[] sanitizeQueryForRelay(byte[] data) throws IOException {
         Message m=parse(data); if(m==null || m.type!='Q')return data;
         return stripReplyOverrides(m)?encode(m):data;
@@ -61,14 +70,14 @@ final class SoodCodec {
 
     static byte[] sanitizeResponseForRelay(byte[] data) throws IOException {
         Message m=parse(data); if(m==null || m.type=='Q')return data;
-        return stripReplyOverrides(m)?encode(m):data;
+        return stripResponseTransaction(m)?encode(m):data;
     }
 
     interface PortMapper { int map(String prop,int original) throws Exception; }
 
     static byte[] rewritePorts(byte[] data, PortMapper mapper) throws Exception {
         Message m=parse(data); if(m==null || m.type=='Q')return data;
-        boolean changed=stripReplyOverrides(m);
+        boolean changed=stripResponseTransaction(m);
         for(Map.Entry<String,String> e:new ArrayList<>(m.props.entrySet())){
             String k=e.getKey(), v=e.getValue(), lk=k.toLowerCase(Locale.ROOT);
             if(k.startsWith("_") || !(lk.equals("port") || lk.endsWith("_port")) || v==null)continue;
