@@ -77,25 +77,15 @@ public class BridgeService extends Service {
     }
 
     private void connectTunnel(WifiRoute route)throws Exception{
-        status("PROXY","WAIT",PROXY_HOST+":"+PROXY_PORT+" 직접 TCP 연결 중");
-        Socket s=connectWithoutNetworkBind(route.address,PROXY_HOST,PROXY_PORT,5000);
-        s.setSoTimeout(5000);
-        status("PROXY","OK",PROXY_HOST+":"+PROXY_PORT+" TCP 도달");
-
-        String request="CONNECT "+RELAY_HOST+":"+RELAY_PORT+" HTTP/1.1\r\n"+
-                "Host: "+RELAY_HOST+":"+RELAY_PORT+"\r\n"+
-                "Proxy-Connection: Keep-Alive\r\nConnection: Keep-Alive\r\n\r\n";
-        OutputStream out=s.getOutputStream();
-        out.write(request.getBytes(StandardCharsets.ISO_8859_1));out.flush();
-        String header=readHttpHeader(s.getInputStream());
-        String first=header.split("\r?\n",2)[0];
-        if(!first.matches("HTTP/\\d(?:\\.\\d)? 2\\d\\d.*"))throw new IOException("NetShare CONNECT 거부: "+first);
+        status("PROXY","WAIT","NetShare VPN 경유 PC Relay 직접 연결 중");
+        log("직접 TCP 시도 → "+RELAY_HOST+":"+RELAY_PORT+" (NetShare VPN이 운송)");
+        Socket s=connectWithoutNetworkBind(route.address,RELAY_HOST,RELAY_PORT,5000);
         s.setSoTimeout(0);
-        status("PROXY","OK","HTTP CONNECT → "+RELAY_HOST+":"+RELAY_PORT+" 통과");
+        status("PROXY","OK","NetShare VPN 경유 → "+RELAY_HOST+":"+RELAY_PORT+" TCP 통과");
 
         tunnelSocket=s;
         TunnelMux tm=new TunnelMux(s); mux=tm;
-        tm.sendText(TunnelMux.HELLO,0,"R8II|ON-SIDECAR|1.1");
+        tm.sendText(TunnelMux.HELLO,0,"R8II|ON-SIDECAR|1.2");
         tm.readLoop(this::onFrame);
         throw new EOFException("PC Relay 연결 종료");
     }
@@ -119,7 +109,7 @@ public class BridgeService extends Service {
             return s;
         }catch(IOException e){
             closeQuiet(s);
-            IOException x=new IOException("proxy TCP 실패 [기본="+shortErr(first)+", source-bind="+shortErr(e)+"]");
+            IOException x=new IOException("TCP 실패 [기본="+shortErr(first)+", source-bind="+shortErr(e)+"]");
             x.addSuppressed(first);
             throw x;
         }
@@ -299,12 +289,6 @@ public class BridgeService extends Service {
     private int nextOddStream(){for(;;){int v=nextStream.getAndAdd(2);if(v>0)return v;nextStream.set(1);}}
     private void closeStream(int id,boolean notify){Socket s=streams.remove(id);closeQuiet(s);if(notify)try{TunnelMux tm=mux;if(tm!=null)tm.send(TunnelMux.CLOSE,id,new byte[0]);}catch(Throwable ignored){}}
     private void closeTunnel(){mux=null;Socket s=tunnelSocket;tunnelSocket=null;closeQuiet(s);for(Integer id:new ArrayList<>(streams.keySet()))closeStream(id,false);status("RELAY","WAIT","PC Relay 재연결 대기");}
-
-    private static String readHttpHeader(InputStream in)throws IOException{
-        ByteArrayOutputStream b=new ByteArrayOutputStream();int state=0;
-        while(b.size()<8192){int x=in.read();if(x<0)throw new EOFException("proxy EOF");b.write(x);if(state==0&&x=='\r')state=1;else if(state==1&&x=='\n')state=2;else if(state==2&&x=='\r')state=3;else if(state==3&&x=='\n')break;else state=0;}
-        return b.toString(StandardCharsets.ISO_8859_1.name());
-    }
 
     private void status(String key,String state,String detail){
         Intent i=new Intent(ACTION_STATUS).setPackage(getPackageName());i.putExtra("key",key);i.putExtra("state",state);i.putExtra("detail",detail);sendBroadcast(i);
