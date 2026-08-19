@@ -46,7 +46,7 @@ public class MainActivity extends Activity {
         ScrollView sv=new ScrollView(this);
         LinearLayout root=new LinearLayout(this);root.setOrientation(LinearLayout.VERTICAL);root.setPadding(dp(20),dp(24),dp(20),dp(30));sv.addView(root);
         TextView title=new TextView(this);title.setText("ON Roon S26 Transport");title.setTextSize(24);title.setTextColor(Color.BLACK);title.setTypeface(null,1);root.addView(title);
-        TextView sub=new TextView(this);sub.setText("FINAL 2.0 · R8↔PC 전송만 담당 · Roon/SOOD 처리 안 함 · 기존 NetShare/PHONE RoonLink 유지");sub.setTextSize(14);sub.setPadding(0,dp(4),0,dp(14));root.addView(sub);
+        TextView sub=new TextView(this);sub.setText("FINAL 2.0 R1 · R8↔PC 전송만 담당 · Roon/SOOD 처리 안 함 · 기존 NetShare/PHONE RoonLink 유지");sub.setTextSize(14);sub.setPadding(0,dp(4),0,dp(14));root.addView(sub);
 
         SharedPreferences sp=getSharedPreferences("gateway",MODE_PRIVATE);
         TextView hostLabel=new TextView(this);hostLabel.setText("PC Relay 외부 주소 / 포트");hostLabel.setTextSize(13);hostLabel.setTypeface(null,1);root.addView(hostLabel);
