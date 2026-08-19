@@ -1,4 +1,4 @@
-import socket, struct, threading, time, os, subprocess, secrets, ipaddress
+import socket, struct, threading, time, os, subprocess, secrets, ipaddress, uuid
 from collections import OrderedDict
 
 PC_LAN_IP="192.168.50.84"
@@ -6,6 +6,7 @@ LISTEN_PORT=51920
 SOOD_PORT=9003
 SOOD_GROUP="239.255.90.90"
 PC_BROADCAST="192.168.50.255"
+CORE_SERVICE="00720724-5143-4a9b-abac-0e50cba674bb"
 MAX_FRAME=1024*1024
 PCP_PORT=5351
 PCP_LIFETIME=3600
@@ -13,14 +14,15 @@ PCP_NONCE=secrets.token_bytes(12)
 
 HELLO=1; PING=2; PONG=3; STATUS=4
 SOOD_QUERY_R8=16; SOOD_RESPONSE_PC=17; SOOD_QUERY_PC=18; SOOD_RESPONSE_R8=19
+SOOD_PACKET_PC=20; SOOD_PACKET_R8=21
 OPEN_R8=32; OPEN_PC=33; OPEN_OK=34; OPEN_ERR=35; DATA=36; CLOSE=37
 
 active_lock=threading.Lock(); active_tunnel=None
-origins_lock=threading.Lock(); origins_pc={}
 injected_lock=threading.Lock(); injected={}
 forward_lock=threading.Lock(); pc_forward_ports={}
 streams_lock=threading.Lock(); streams={}
-next_lock=threading.Lock(); next_stream=2; next_query=200002
+next_lock=threading.Lock(); next_stream=2
+last_core_lock=threading.Lock(); last_core_sig=None
 
 def log(msg): print(time.strftime("[%H:%M:%S]"),msg,flush=True)
 
@@ -43,13 +45,12 @@ def get_default_gateway():
         out=subprocess.check_output(["powershell","-NoProfile","-Command",cmd],text=True,timeout=5,creationflags=flags,stderr=subprocess.DEVNULL)
         for line in out.splitlines():
             line=line.strip()
-            try:socket.inet_aton(line);return line
-            except OSError:pass
-    except Exception as e:log("PCP 기본 게이트웨이 탐색 실패: "+str(e))
+            try: socket.inet_aton(line); return line
+            except OSError: pass
+    except Exception as e: log("PCP 기본 게이트웨이 탐색 실패: "+str(e))
     return None
 
-def ipv4_mapped(ip):return b"\x00"*10+b"\xff\xff"+socket.inet_aton(ip)
-
+def ipv4_mapped(ip): return b"\x00"*10+b"\xff\xff"+socket.inet_aton(ip)
 def decode_pcp_address(raw):
     if len(raw)!=16:return "?"
     if raw[:12]==b"\x00"*10+b"\xff\xff":return socket.inet_ntoa(raw[12:16])
@@ -58,84 +59,73 @@ def decode_pcp_address(raw):
 
 def pcp_map_request(gateway,prefer_failure=True):
     probe=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
-    try:probe.connect((gateway,PCP_PORT));local_ip=probe.getsockname()[0]
-    finally:probe.close()
-    client=ipv4_mapped(local_ip)
-    header=struct.pack("!BBHI16s",2,1,0,PCP_LIFETIME,client)
+    try: probe.connect((gateway,PCP_PORT)); local_ip=probe.getsockname()[0]
+    finally: probe.close()
+    header=struct.pack("!BBHI16s",2,1,0,PCP_LIFETIME,ipv4_mapped(local_ip))
     body=PCP_NONCE+struct.pack("!B3sHH16s",6,b"\x00\x00\x00",LISTEN_PORT,LISTEN_PORT,b"\x00"*16)
     option=struct.pack("!BBH",2,0,0) if prefer_failure else b""
-    req=header+body+option
     s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
-    try:s.bind((local_ip,0));s.settimeout(2.5);s.sendto(req,(gateway,PCP_PORT));resp,_=s.recvfrom(2048)
+    try:s.bind((local_ip,0));s.settimeout(2.5);s.sendto(header+body+option,(gateway,PCP_PORT));resp,_=s.recvfrom(2048)
     finally:s.close()
     if len(resp)<60:raise OSError("PCP 응답이 너무 짧음")
-    if resp[0]!=2 or (resp[1]&0x80)==0 or (resp[1]&0x7f)!=1:raise OSError("PCP MAP 응답 형식 오류")
     result=resp[3];lifetime=struct.unpack("!I",resp[4:8])[0]
-    if result!=0:return {"ok":False,"result":result,"lifetime":lifetime,"gateway":gateway,"local":local_ip,"prefer":prefer_failure}
-    if resp[24:36]!=PCP_NONCE:raise OSError("PCP nonce 불일치")
-    if resp[36]!=6:raise OSError("PCP protocol 불일치")
-    internal=struct.unpack("!H",resp[40:42])[0];external=struct.unpack("!H",resp[42:44])[0]
-    if internal!=LISTEN_PORT:raise OSError("PCP internal port 불일치")
-    external_ip=decode_pcp_address(resp[44:60])
-    return {"ok":True,"result":0,"lifetime":lifetime,"gateway":gateway,"local":local_ip,"external_ip":external_ip,"external_port":external,"prefer":prefer_failure}
+    if result!=0:return {"ok":False,"result":result,"lifetime":lifetime,"gateway":gateway,"local":local_ip}
+    external=struct.unpack("!H",resp[42:44])[0]
+    return {"ok":True,"lifetime":lifetime,"local":local_ip,"external_ip":decode_pcp_address(resp[44:60]),"external_port":external}
 
 def pcp_map_once():
     gateway=get_default_gateway()
     if not gateway:raise OSError("기본 게이트웨이를 찾지 못함")
-    first=pcp_map_request(gateway,True)
-    if first.get("ok"):return first
-    log("PCP 정확한 51920 요청 실패 result="+str(first.get("result"))+" · 일반 MAP 재시도")
-    second=pcp_map_request(gateway,False)
-    if not second.get("ok"):raise OSError("PCP MAP 실패 result="+str(second.get("result")))
-    return second
+    x=pcp_map_request(gateway,True)
+    if x.get("ok"):return x
+    x=pcp_map_request(gateway,False)
+    if not x.get("ok"):raise OSError("PCP MAP 실패 result="+str(x.get("result")))
+    return x
 
 def pcp_keepalive_loop():
     while True:
         wait=60
         try:
-            info=pcp_map_once();life=int(info.get("lifetime") or PCP_LIFETIME);ext=info.get("external_ip","?");port=info.get("external_port",0);exact=(port==LISTEN_PORT)
-            log("PCP TCP 자동개방 성공 · "+str(info.get("local"))+":"+str(LISTEN_PORT)+" -> "+ext+":"+str(port)+( " · 외부포트 51920 OK" if exact else " · 주의: S26 포트를 "+str(port)+"로 입력"))
+            info=pcp_map_once();life=int(info.get("lifetime") or PCP_LIFETIME);port=info.get("external_port",0)
+            log("PCP TCP 자동개방 성공 · "+str(info.get("local"))+":"+str(LISTEN_PORT)+" -> "+str(info.get("external_ip"))+":"+str(port)+( " · 외부포트 51920 OK" if port==LISTEN_PORT else ""))
             wait=max(60,min(1200,max(60,life//2)))
-        except Exception as e:
-            log("PCP TCP 51920 자동개방 실패: "+str(e)+" · 기존 PHONE RoonLink는 영향 없음")
-            wait=45
+        except Exception as e: log("PCP TCP 51920 자동개방 실패: "+str(e));wait=45
         time.sleep(wait)
 
 class Tunnel:
-    def __init__(self,sock,addr): self.sock=sock; self.addr=addr; self.lock=threading.Lock(); self.alive=True
+    def __init__(self,sock,addr):self.sock=sock;self.addr=addr;self.lock=threading.Lock();self.alive=True
     def send(self,typ,sid=0,payload=b""):
-        if isinstance(payload,str): payload=payload.encode()
-        if len(payload)>MAX_FRAME: raise ValueError("frame too large")
+        if isinstance(payload,str):payload=payload.encode()
+        if len(payload)>MAX_FRAME:raise ValueError("frame too large")
         frame=struct.pack(">BII",typ,sid&0xffffffff,len(payload))+payload
-        with self.lock: self.sock.sendall(frame)
+        with self.lock:self.sock.sendall(frame)
     def loop(self):
         global active_tunnel
         try:
             while self.alive:
                 typ,sid,ln=struct.unpack(">BII",recvn(self.sock,9))
-                if ln>MAX_FRAME: raise ValueError("bad frame")
+                if ln>MAX_FRAME:raise ValueError("bad frame")
                 payload=recvn(self.sock,ln) if ln else b""
                 handle_frame(self,typ,sid,payload)
-        except Exception as e: log("R8 DISCONNECTED: "+str(e))
+        except Exception as e:log("R8 DISCONNECTED: "+str(e))
         finally:
             self.alive=False
             try:self.sock.close()
             except:pass
             with active_lock:
-                if active_tunnel is self: active_tunnel=None
+                if active_tunnel is self:active_tunnel=None
             close_all_streams()
 
 def endpoint_packet(ip,port,packet=b""):
     ib=ip.encode()
-    if not (0<len(ib)<=255): raise ValueError("bad ip")
+    if not (0<len(ib)<=255):raise ValueError("bad ip")
     return bytes([len(ib)])+ib+struct.pack(">H",port)+packet
 
 def decode_endpoint_packet(b):
-    if len(b)<4: raise ValueError("short endpoint")
+    if len(b)<4:raise ValueError("short endpoint")
     n=b[0]
-    if n==0 or 1+n+2>len(b): raise ValueError("bad endpoint")
-    ip=b[1:1+n].decode(); port=struct.unpack(">H",b[1+n:3+n])[0]
-    return ip,port,b[3+n:]
+    if n==0 or 1+n+2>len(b):raise ValueError("bad endpoint")
+    return b[1:1+n].decode(),struct.unpack(">H",b[1+n:3+n])[0],b[3+n:]
 
 def parse_sood(data):
     if len(data)<6 or data[:4]!=b"SOOD" or data[4]!=2:return None
@@ -144,9 +134,8 @@ def parse_sood(data):
         while p<len(data):
             nl=data[p];p+=1
             if nl==0 or p+nl+2>len(data):return None
-            name=data[p:p+nl].decode();p+=nl
-            vl=(data[p]<<8)|data[p+1];p+=2
-            if vl==0xffff: val=None
+            name=data[p:p+nl].decode();p+=nl;vl=(data[p]<<8)|data[p+1];p+=2
+            if vl==0xffff:val=None
             else:
                 if p+vl>len(data):return None
                 val=data[p:p+vl].decode();p+=vl
@@ -167,9 +156,17 @@ def encode_sood(typ,props):
             out+=struct.pack(">H",len(vb));out+=vb
     return bytes(out)
 
-def rewrite_ports(data,mapper):
+def sanitize_sood(data):
     parsed=parse_sood(data)
-    if not parsed or parsed[0]=="Q":return data
+    if not parsed:return data
+    typ,props=parsed;changed=False
+    for k in ("_replyaddr","_replyport"):
+        if k in props:props.pop(k,None);changed=True
+    return encode_sood(typ,props) if changed else data
+
+def rewrite_ports(data,mapper):
+    parsed=parse_sood(sanitize_sood(data))
+    if not parsed or parsed[0]=="Q":return sanitize_sood(data)
     typ,props=parsed;changed=False
     for k in list(props):
         v=props[k];lk=k.lower()
@@ -178,10 +175,13 @@ def rewrite_ports(data,mapper):
             p=int(v)
             if 0<p<=65535:props[k]=str(mapper(k,p));changed=True
         except:pass
-    return encode_sood(typ,props) if changed else data
+    return encode_sood(typ,props) if changed else encode_sood(typ,props)
+
+def build_query(service_id):
+    return encode_sood("Q",OrderedDict([("_tid",str(uuid.uuid4())),("query_service_id",service_id)]))
 
 def mark_injected(data):
-    with injected_lock: injected[hash(data)]=time.time()+2.2
+    with injected_lock:injected[hash(data)]=time.time()+3.5
 
 def is_injected(data):
     h=hash(data);now=time.time()
@@ -191,6 +191,12 @@ def is_injected(data):
         if exp<now:injected.pop(h,None);return False
         return True
 
+def cleanup_injected():
+    now=time.time()
+    with injected_lock:
+        for k,v in list(injected.items()):
+            if v<now:injected.pop(k,None)
+
 def get_tunnel():
     with active_lock:return active_tunnel
 
@@ -199,13 +205,6 @@ def alloc_even_stream():
     with next_lock:
         v=next_stream;next_stream+=2
         if next_stream>0x7ffffffe:next_stream=2
-        return v
-
-def alloc_query():
-    global next_query
-    with next_lock:
-        v=next_query;next_query+=2
-        if next_query>0x7ffffffe:next_query=200002
         return v
 
 def close_stream(sid,notify=False):
@@ -243,7 +242,7 @@ def open_r8_to_pc(t,sid,ip,port):
         with streams_lock:streams[sid]=s
         t.send(OPEN_OK,sid)
         threading.Thread(target=pump_socket,args=(t,sid,s),daemon=True).start()
-        log(f"R8 stream {sid} -> Core {ip}:{port}")
+        log(f"CORE TCP REAL: R8 stream {sid} -> {ip}:{port}")
     except Exception as e:
         try:t.send(OPEN_ERR,sid,str(e))
         except:pass
@@ -253,24 +252,26 @@ def handle_frame(t,typ,sid,payload):
     if typ==HELLO:
         log("R8 CONNECTED "+payload.decode(errors="replace"));t.send(STATUS,0,b"RELAY_OK")
     elif typ==PING:t.send(PONG,0)
+    elif typ==SOOD_PACKET_R8:
+        ip,port,packet=decode_endpoint_packet(payload)
+        threading.Thread(target=inject_r8_sood,args=(t,ip,port,packet),daemon=True).start()
     elif typ==SOOD_QUERY_R8:
         ip,port,packet=decode_endpoint_packet(payload)
-        threading.Thread(target=probe_lan,args=(t,sid,packet),daemon=True).start()
+        threading.Thread(target=inject_r8_sood,args=(t,ip,port,packet),daemon=True).start()
     elif typ==SOOD_RESPONSE_R8:
-        ip,port,packet=decode_endpoint_packet(payload);handle_r8_sood_response(t,sid,ip,port,packet)
+        ip,port,packet=decode_endpoint_packet(payload)
+        threading.Thread(target=inject_r8_sood,args=(t,ip,port,packet),daemon=True).start()
     elif typ==OPEN_R8:
-        ip,port,_=decode_endpoint_packet(payload)
-        threading.Thread(target=open_r8_to_pc,args=(t,sid,ip,port),daemon=True).start()
+        ip,port,_=decode_endpoint_packet(payload);threading.Thread(target=open_r8_to_pc,args=(t,sid,ip,port),daemon=True).start()
     elif typ==DATA:
         with streams_lock:s=streams.get(sid)
         if s:
             try:s.sendall(payload)
             except:close_stream(sid,True)
     elif typ==CLOSE:close_stream(sid,False)
-    elif typ==OPEN_ERR:
-        log(f"R8 reverse stream failed {sid}: "+payload.decode(errors="replace"));close_stream(sid,False)
+    elif typ==OPEN_ERR:log(f"R8 reverse stream failed {sid}: "+payload.decode(errors="replace"));close_stream(sid,False)
 
-def probe_lan(t,flow,query):
+def send_sood_lan(data):
     s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM,socket.IPPROTO_UDP)
     try:
         s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1);s.setsockopt(socket.SOL_SOCKET,socket.SO_BROADCAST,1)
@@ -278,60 +279,87 @@ def probe_lan(t,flow,query):
         except OSError:s.bind(("0.0.0.0",0))
         try:s.setsockopt(socket.IPPROTO_IP,socket.IP_MULTICAST_IF,socket.inet_aton(PC_LAN_IP))
         except OSError:pass
-        s.settimeout(.30);mark_injected(query)
-        s.sendto(query,(SOOD_GROUP,SOOD_PORT))
-        try:s.sendto(query,(PC_BROADCAST,SOOD_PORT))
+        mark_injected(data)
+        s.sendto(data,(SOOD_GROUP,SOOD_PORT))
+        try:s.sendto(data,(PC_BROADCAST,SOOD_PORT))
         except OSError:pass
-        end=time.time()+1.4;seen=set();count=0
-        while time.time()<end:
-            try:data,addr=s.recvfrom(65535)
-            except socket.timeout:continue
-            parsed=parse_sood(data)
-            if not parsed or parsed[0]=="Q":continue
-            sig=(addr,hash(data))
-            if sig in seen:continue
-            seen.add(sig);count+=1
-            t.send(SOOD_RESPONSE_PC,flow,endpoint_packet(addr[0],addr[1],data))
-        if count:log(f"R8 discovery flow {flow}: LAN responses={count}")
-    except Exception as e:log("LAN SOOD probe: "+repr(e))
     finally:s.close()
+
+def inject_r8_sood(t,r8ip,r8port,packet):
+    try:
+        parsed=parse_sood(packet)
+        if not parsed:return
+        typ,props=parsed
+        out=sanitize_sood(packet) if typ=="Q" else rewrite_ports(packet,lambda prop,p:ensure_pc_forwarder(r8ip,p))
+        send_sood_lan(out)
+        if typ=="Q":log("SOOD R8→PC query bridged")
+        else:
+            svc=props.get("service_id") or props.get("name") or "response"
+            log("SOOD R8→PC response bridged · "+str(svc)+" · source "+r8ip)
+    except Exception as e:log("R8 SOOD inject: "+repr(e))
 
 def pc_sood_listener():
     while True:
         s=None
         try:
             s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM,socket.IPPROTO_UDP)
-            s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
-            s.bind(("0.0.0.0",SOOD_PORT))
+            s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1);s.bind(("0.0.0.0",SOOD_PORT))
             s.setsockopt(socket.IPPROTO_IP,socket.IP_ADD_MEMBERSHIP,socket.inet_aton(SOOD_GROUP)+socket.inet_aton(PC_LAN_IP))
-            log(f"SOOD LAN listener {SOOD_GROUP}:{SOOD_PORT} on {PC_LAN_IP}")
+            log(f"SOOD FULL bridge listener {SOOD_GROUP}:{SOOD_PORT} on {PC_LAN_IP}")
             while True:
                 data,addr=s.recvfrom(65535);parsed=parse_sood(data)
-                if not parsed or parsed[0]!="Q" or is_injected(data):continue
+                if not parsed or is_injected(data):continue
                 t=get_tunnel()
                 if not t:continue
-                flow=alloc_query()
-                with origins_lock:origins_pc[flow]=addr
-                t.send(SOOD_QUERY_PC,flow,endpoint_packet(addr[0],addr[1],data))
-        except Exception as e:
-            log("SOOD listener unavailable/retry: "+repr(e));time.sleep(2)
+                safe=sanitize_sood(data)
+                t.send(SOOD_PACKET_PC,0,endpoint_packet(addr[0],addr[1],safe))
+        except Exception as e:log("SOOD listener unavailable/retry: "+repr(e));time.sleep(1)
         finally:
             if s:
                 try:s.close()
                 except:pass
 
-def handle_r8_sood_response(t,flow,r8ip,r8port,packet):
-    with origins_lock:origin=origins_pc.get(flow)
-    if not origin:return
-    try:
-        rewritten=rewrite_ports(packet,lambda prop,p:ensure_pc_forwarder(r8ip,p))
-        s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
+def active_core_probe_loop():
+    global last_core_sig
+    while True:
+        time.sleep(1.5)
+        t=get_tunnel()
+        if not t:continue
+        s=None
         try:
+            q=build_query(CORE_SERVICE);mark_injected(q)
+            s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM,socket.IPPROTO_UDP)
+            s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1);s.setsockopt(socket.SOL_SOCKET,socket.SO_BROADCAST,1)
             try:s.bind((PC_LAN_IP,0))
             except OSError:s.bind(("0.0.0.0",0))
-            s.sendto(rewritten,origin)
-        finally:s.close()
-    except Exception as e:log("R8 SOOD inject: "+repr(e))
+            try:s.setsockopt(socket.IPPROTO_IP,socket.IP_MULTICAST_IF,socket.inet_aton(PC_LAN_IP))
+            except OSError:pass
+            s.settimeout(.22);s.sendto(q,(SOOD_GROUP,SOOD_PORT))
+            try:s.sendto(q,(PC_BROADCAST,SOOD_PORT))
+            except OSError:pass
+            end=time.time()+1.15
+            while time.time()<end:
+                try:data,addr=s.recvfrom(65535)
+                except socket.timeout:continue
+                parsed=parse_sood(data)
+                if not parsed or parsed[0]=="Q":continue
+                props=parsed[1]
+                if props.get("service_id")!=CORE_SERVICE:continue
+                safe=sanitize_sood(data);t2=get_tunnel()
+                if t2 is not t:break
+                t.send(SOOD_PACKET_PC,0,endpoint_packet(addr[0],addr[1],safe))
+                sig=(addr[0],tuple(props.items()))
+                with last_core_lock:
+                    if sig!=last_core_sig:
+                        last_core_sig=sig
+                        ports={k:v for k,v in props.items() if k.lower()=="port" or k.lower().endswith("_port")}
+                        log("ROON CORE FOUND REAL · "+addr[0]+" · ports="+str(ports))
+        except Exception as e:log("Core active SOOD probe: "+repr(e))
+        finally:
+            if s:
+                try:s.close()
+                except:pass
+        cleanup_injected();time.sleep(2.0)
 
 def ensure_pc_forwarder(target_ip,target_port):
     key=f"{target_ip}:{target_port}"
@@ -345,37 +373,37 @@ def ensure_pc_forwarder(target_ip,target_port):
 
 def pc_forward_accept(ss,target_ip,target_port):
     while True:
-        try:local,_=ss.accept()
+        try:local,addr=ss.accept()
         except Exception:return
         t=get_tunnel()
-        if not t:
-            local.close();continue
+        if not t:local.close();continue
         sid=alloc_even_stream()
         with streams_lock:streams[sid]=local
-        try:t.send(OPEN_PC,sid,endpoint_packet(target_ip,target_port));threading.Thread(target=pump_socket,args=(t,sid,local),daemon=True).start()
+        try:
+            t.send(OPEN_PC,sid,endpoint_packet(target_ip,target_port));threading.Thread(target=pump_socket,args=(t,sid,local),daemon=True).start()
+            log(f"R8 OUTPUT REAL: PC Roon {addr} -> proxy -> R8 {target_ip}:{target_port}")
         except Exception:close_stream(sid,False)
 
 def tunnel_server():
     global active_tunnel
     srv=socket.socket(socket.AF_INET,socket.SOCK_STREAM);srv.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1);srv.bind(("0.0.0.0",LISTEN_PORT));srv.listen(8)
-    log(f"PC Relay listening 0.0.0.0:{LISTEN_PORT} (LAN {PC_LAN_IP}) · KEY 없음")
+    log(f"PC Relay listening 0.0.0.0:{LISTEN_PORT} (LAN {PC_LAN_IP}) · REAL ROON SOOD bridge")
     while True:
         s,addr=srv.accept();s.setsockopt(socket.IPPROTO_TCP,socket.TCP_NODELAY,1);s.setsockopt(socket.SOL_SOCKET,socket.SO_KEEPALIVE,1)
-        log("S26/R8 TCP accepted from "+str(addr)+" · KEY 없음")
+        log("S26/R8 TCP accepted from "+str(addr))
         t=Tunnel(s,addr)
-        with active_lock:
-            old=active_tunnel;active_tunnel=t
+        with active_lock:old=active_tunnel;active_tunnel=t
         if old:
             try:old.alive=False;old.sock.close()
             except:pass
         threading.Thread(target=t.loop,daemon=True).start()
 
 def main():
-    print("ON RoonLink NetShare PC Relay v1.3 - KEYLESS / PUBLIC / PCP")
-    print("Existing Roon Server + alpha7 Host + S26 PHONE RoonLink stay unchanged.")
-    print("TCP 51920 is a separate raw R8 relay path. No KEY/AES in this test build.\n")
+    print("ON RoonLink NetShare PC Relay v1.4 - REAL ROON / FULL SOOD BRIDGE")
+    print("R8<->S26 path unchanged. Bridges Roon Core discovery + RAAT Output discovery + TCP streams.\n")
     threading.Thread(target=pcp_keepalive_loop,daemon=True).start()
     threading.Thread(target=pc_sood_listener,daemon=True).start()
+    threading.Thread(target=active_core_probe_loop,daemon=True).start()
     tunnel_server()
 
 if __name__=="__main__":
