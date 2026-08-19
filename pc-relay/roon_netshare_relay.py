@@ -1,4 +1,4 @@
-import socket, struct, threading, time
+import socket, struct, threading, time, os, subprocess, secrets, ipaddress
 from collections import OrderedDict
 
 PC_LAN_IP="192.168.50.84"
@@ -7,6 +7,9 @@ SOOD_PORT=9003
 SOOD_GROUP="239.255.90.90"
 PC_BROADCAST="192.168.50.255"
 MAX_FRAME=1024*1024
+PCP_PORT=5351
+PCP_LIFETIME=3600
+PCP_NONCE=secrets.token_bytes(12)
 
 HELLO=1; PING=2; PONG=3; STATUS=4
 SOOD_QUERY_R8=16; SOOD_RESPONSE_PC=17; SOOD_QUERY_PC=18; SOOD_RESPONSE_R8=19
@@ -20,6 +23,89 @@ streams_lock=threading.Lock(); streams={}
 next_lock=threading.Lock(); next_stream=2; next_query=200002
 
 def log(msg): print(time.strftime("[%H:%M:%S]"),msg,flush=True)
+
+def get_default_gateway():
+    if os.name != "nt": return None
+    cmd=("Get-NetRoute -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' "
+         "| Where-Object {$_.NextHop -and $_.NextHop -ne '0.0.0.0'} "
+         "| Sort-Object RouteMetric,InterfaceMetric "
+         "| Select-Object -First 1 -ExpandProperty NextHop")
+    flags=getattr(subprocess,"CREATE_NO_WINDOW",0)
+    try:
+        out=subprocess.check_output(["powershell","-NoProfile","-Command",cmd],text=True,timeout=5,creationflags=flags,stderr=subprocess.DEVNULL)
+        for line in out.splitlines():
+            line=line.strip()
+            try:
+                socket.inet_aton(line)
+                return line
+            except OSError: pass
+    except Exception as e:
+        log("PCP 기본 게이트웨이 탐색 실패: "+str(e))
+    return None
+
+def ipv4_mapped(ip):
+    return b"\x00"*10+b"\xff\xff"+socket.inet_aton(ip)
+
+def decode_pcp_address(raw):
+    if len(raw)!=16:return "?"
+    if raw[:12]==b"\x00"*10+b"\xff\xff":
+        return socket.inet_ntoa(raw[12:16])
+    try:return str(ipaddress.IPv6Address(raw))
+    except:return "?"
+
+def pcp_map_request(gateway,prefer_failure=True):
+    probe=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
+    try:
+        probe.connect((gateway,PCP_PORT));local_ip=probe.getsockname()[0]
+    finally:probe.close()
+    client=ipv4_mapped(local_ip)
+    header=struct.pack("!BBHI16s",2,1,0,PCP_LIFETIME,client)
+    body=PCP_NONCE+struct.pack("!B3sHH16s",6,b"\x00\x00\x00",LISTEN_PORT,LISTEN_PORT,b"\x00"*16)
+    # PREFER_FAILURE(code=2)로 우선 외부 포트도 51920을 정확히 요청한다.
+    option=struct.pack("!BBH",2,0,0) if prefer_failure else b""
+    req=header+body+option
+    s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
+    try:
+        s.bind((local_ip,0));s.settimeout(2.5);s.sendto(req,(gateway,PCP_PORT));resp,_=s.recvfrom(2048)
+    finally:s.close()
+    if len(resp)<60:raise OSError("PCP 응답이 너무 짧음")
+    if resp[0]!=2 or (resp[1]&0x80)==0 or (resp[1]&0x7f)!=1:raise OSError("PCP MAP 응답 형식 오류")
+    result=resp[3]
+    lifetime=struct.unpack("!I",resp[4:8])[0]
+    if result!=0:return {"ok":False,"result":result,"lifetime":lifetime,"gateway":gateway,"local":local_ip,"prefer":prefer_failure}
+    if resp[24:36]!=PCP_NONCE:raise OSError("PCP nonce 불일치")
+    if resp[36]!=6:raise OSError("PCP protocol 불일치")
+    internal=struct.unpack("!H",resp[40:42])[0]
+    external=struct.unpack("!H",resp[42:44])[0]
+    if internal!=LISTEN_PORT:raise OSError("PCP internal port 불일치")
+    external_ip=decode_pcp_address(resp[44:60])
+    return {"ok":True,"result":0,"lifetime":lifetime,"gateway":gateway,"local":local_ip,"external_ip":external_ip,"external_port":external,"prefer":prefer_failure}
+
+def pcp_map_once():
+    gateway=get_default_gateway()
+    if not gateway:raise OSError("기본 게이트웨이를 찾지 못함")
+    first=pcp_map_request(gateway,True)
+    if first.get("ok"):return first
+    # 공유기가 PREFER_FAILURE를 지원하지 않거나 정확한 51920을 줄 수 없으면
+    # 일반 MAP으로 한 번 더 요청하고 실제 배정 포트를 화면에 알려준다.
+    log("PCP 정확한 51920 요청 실패 result="+str(first.get("result"))+" · 일반 MAP 재시도")
+    second=pcp_map_request(gateway,False)
+    if not second.get("ok"):raise OSError("PCP MAP 실패 result="+str(second.get("result")))
+    return second
+
+def pcp_keepalive_loop():
+    while True:
+        wait=60
+        try:
+            info=pcp_map_once();life=int(info.get("lifetime") or PCP_LIFETIME)
+            ext=info.get("external_ip","?");port=info.get("external_port",0)
+            exact=(port==LISTEN_PORT)
+            log("PCP TCP 자동개방 성공 · "+str(info.get("local"))+":"+str(LISTEN_PORT)+" → "+ext+":"+str(port)+("· 외부포트 51920 OK" if exact else " · 주의: S26 포트를 "+str(port)+"로 입력"))
+            wait=max(60,min(1200,max(60,life//2)))
+        except Exception as e:
+            log("PCP TCP 51920 자동개방 실패: "+str(e)+" · 기존 PHONE RoonLink는 영향 없음")
+            wait=45
+        time.sleep(wait)
 
 def recvn(sock,n):
     out=bytearray()
@@ -289,6 +375,7 @@ def tunnel_server():
     log(f"PC Relay listening 0.0.0.0:{LISTEN_PORT} (LAN {PC_LAN_IP})")
     while True:
         s,addr=srv.accept();s.setsockopt(socket.IPPROTO_TCP,socket.TCP_NODELAY,1);t=Tunnel(s,addr)
+        log("Gateway TCP accepted from "+str(addr))
         with active_lock:
             old=active_tunnel;active_tunnel=t
         if old:
@@ -297,9 +384,10 @@ def tunnel_server():
         threading.Thread(target=t.loop,daemon=True).start()
 
 def main():
-    print("ON RoonLink NetShare PC Relay v1")
-    print("Keep existing Roon Server + ON RoonLink Host + S26 PHONE tunnel unchanged.")
-    print("Waiting for R8 sidecar through NetShare HTTP CONNECT...\n")
+    print("ON RoonLink NetShare PC Relay v1.1 - PUBLIC/PCP")
+    print("Existing Roon Server + alpha7 Host + S26 PHONE RoonLink stay unchanged.")
+    print("TCP 51920 is a separate R8 relay path. PCP will try to open it automatically.\n")
+    threading.Thread(target=pcp_keepalive_loop,daemon=True).start()
     threading.Thread(target=pc_sood_listener,daemon=True).start()
     tunnel_server()
 
