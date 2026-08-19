@@ -8,8 +8,8 @@ android {
         applicationId = "com.onroonlink.s26gateway"
         minSdk = 26
         targetSdk = 36
-        versionCode = 8
-        versionName = "1.7-netshare-sood-reply-proxy"
+        versionCode = 20
+        versionName = "2.0-final-transport-only"
     }
 
     signingConfigs {
