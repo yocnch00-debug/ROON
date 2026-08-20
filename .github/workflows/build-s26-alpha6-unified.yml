@@ -39,8 +39,12 @@ jobs:
           if unzip -l out/shim.apk | grep -q 'classes2.dex'; then unzip -p out/shim.apk classes2.dex > out/classes2.dex; fi
           cp "$ANDROID_HOME/build-tools/36.0.0/lib/apksigner.jar" out/tools/apksigner.jar
           cp "$ANDROID_HOME/build-tools/36.0.0/zipalign" out/tools/zipalign
-          chmod +x out/tools/zipalign
-          sha256sum out/* 2>/dev/null > out/SHA256.txt || true
+          cp "$ANDROID_HOME/build-tools/36.0.0/aapt2" out/tools/aapt2
+          chmod +x out/tools/zipalign out/tools/aapt2
+          ldd "$ANDROID_HOME/build-tools/36.0.0/aapt2" > out/tools/aapt2-ldd.txt || true
+          ldd "$ANDROID_HOME/build-tools/36.0.0/zipalign" > out/tools/zipalign-ldd.txt || true
+          find "$ANDROID_HOME" -name 'libc++.so' -type f -print -quit | xargs -r -I{} cp {} out/tools/libc++.so
+          sha256sum out/* out/tools/* 2>/dev/null > out/SHA256.txt || true
       - uses: actions/upload-artifact@v4
         with:
           name: s26-alpha6-unified-shim
