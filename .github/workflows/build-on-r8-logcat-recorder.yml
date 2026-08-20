@@ -1,0 +1,52 @@
+name: Build ON R8 Logcat Recorder
+
+on:
+  push:
+    branches:
+      - tmp/on-r8-logcat-recorder-20260820
+    paths:
+      - 'logger-app/**'
+      - '.github/workflows/build-on-r8-logcat-recorder.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install SDK 36
+        run: yes | sdkmanager --licenses >/dev/null && sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
+
+      - name: Set up Gradle 8.13
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.13'
+
+      - name: Build debug APK
+        working-directory: logger-app
+        run: gradle --no-daemon :app:assembleDebug
+
+      - name: Package outputs
+        run: |
+          cp logger-app/app/build/outputs/apk/debug/app-debug.apk ON-R8-Logcat-Recorder-v1.0.apk
+          sha256sum ON-R8-Logcat-Recorder-v1.0.apk > ON-R8-Logcat-Recorder-v1.0-SHA256.txt
+          zip -r ON-R8-Logcat-Recorder-v1.0-SOURCE.zip logger-app .github/workflows/build-on-r8-logcat-recorder.yml
+
+      - name: Upload outputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: ON-R8-Logcat-Recorder-v1.0
+          path: |
+            ON-R8-Logcat-Recorder-v1.0.apk
+            ON-R8-Logcat-Recorder-v1.0-SHA256.txt
+            ON-R8-Logcat-Recorder-v1.0-SOURCE.zip
