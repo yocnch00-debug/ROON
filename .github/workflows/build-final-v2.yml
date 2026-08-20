@@ -35,7 +35,9 @@ jobs:
           cp android-sidecar/onroonlink-test.jks android-s26-gateway/onroonlink-test.jks
       - name: FINAL architecture checks
         run: |
-          grep -q '2.0-final-transport-only' android-s26-gateway/app/build.gradle.kts
+          grep -q '2.1-external-phone-vpn-first' android-s26-gateway/app/build.gradle.kts
+          grep -q 'PHONE_VPN_PC="10.88.10.1"' android-s26-gateway/app/src/main/java/com/onroonlink/s26gateway/GatewayService.java
+          grep -q 'PHONE VPN INTERNAL' android-s26-gateway/app/src/main/java/com/onroonlink/s26gateway/GatewayService.java
           grep -q 'TRANSPORT ONLY' android-s26-gateway/app/src/main/java/com/onroonlink/s26gateway/GatewayService.java
           grep -q '주소 저장 · 연결 유지' android-s26-gateway/app/src/main/java/com/onroonlink/s26gateway/MainActivity.java
           if grep -Eq 'DatagramSocket|MulticastSocket|joinGroup|bindSocket\(' android-s26-gateway/app/src/main/java/com/onroonlink/s26gateway/GatewayService.java; then echo 'S26 must be transport-only'; exit 1; fi
@@ -62,19 +64,20 @@ jobs:
         run: |
           mkdir -p out
           cp android-sidecar/app/build/outputs/apk/debug/app-debug.apk out/ON-Roon-NetShare-R8-Sidecar-v1.8-STATEFUL-ENDPOINT.apk
-          cp android-s26-gateway/app/build/outputs/apk/debug/app-debug.apk out/ON-Roon-S26-Transport-v2.0-FINAL.apk
+          cp android-s26-gateway/app/build/outputs/apk/debug/app-debug.apk out/ON-Roon-S26-Transport-v2.1-EXTERNAL-PHONE-VPN-FIRST.apk
           sha256sum out/* > out/SHA256SUMS.txt
           cat > out/INSTALL.txt <<'EOF'
-          FINAL 2.0 architecture
-          1) PC Relay v2.0 runs beside Roon Server.
-          2) S26 Transport does TCP only: R8:51921 <-> PC:51920. It never touches UDP 9003/SOOD.
-          3) R8 Sidecar receives PC Roon SOOD over the persistent tunnel, queries local HiBy Roon Ready, and returns the response.
-          4) PC Relay rewrites dynamic Roon Ready TCP ports to local proxy ports and tunnels RAAT TCP back to R8.
-          Existing PHONE RoonLink and NetShare remain unchanged.
+          S26 v2.1 external route fix
+          - HOME / same PC LAN: keep proven direct 192.168.50.84:51920 path first.
+          - EXTERNAL / mobile: first use existing PHONE RoonLink VPN internal PC endpoint 10.88.10.1:51920.
+          - Public 121.133.225.83:51920 remains only a fallback.
+          - S26 stays TRANSPORT ONLY: no VpnService, no SOOD, no UDP discovery logic.
+          - Existing PHONE RoonLink VPN and NetShare remain unchanged.
+          - R8 v2.1 RAAT AUX and PC v2.6/unified RAAT logic are unchanged.
           EOF
       - uses: actions/upload-artifact@v4
         with:
-          name: ON-Roon-FINAL-v2-Android
+          name: ON-Roon-S26-v2.1-EXTERNAL-PHONE-VPN-FIRST
           path: out/
 
   windows-relay:
