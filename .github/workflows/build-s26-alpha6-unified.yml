@@ -1,0 +1,53 @@
+name: Build S26 Alpha6 Unified Shim
+
+on:
+  push:
+    branches: [ s26-alpha6-unified ]
+    paths:
+      - 's26-alpha6-unified/**'
+      - '.github/workflows/build-s26-alpha6-unified.yml'
+  pull_request:
+    paths:
+      - 's26-alpha6-unified/**'
+      - '.github/workflows/build-s26-alpha6-unified.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - name: Install Android SDK 36
+        run: yes | sdkmanager --licenses >/dev/null && sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.13'
+      - name: Build unified UI shim
+        working-directory: s26-alpha6-unified
+        run: gradle --no-daemon :app:assembleDebug
+      - name: Export patch pieces and tools
+        run: |
+          mkdir -p out/tools
+          cp s26-alpha6-unified/app/build/outputs/apk/debug/app-debug.apk out/shim.apk
+          unzip -p out/shim.apk AndroidManifest.xml > out/AndroidManifest.xml
+          unzip -p out/shim.apk classes.dex > out/classes.dex
+          if unzip -l out/shim.apk | grep -q 'classes2.dex'; then unzip -p out/shim.apk classes2.dex > out/classes2.dex; fi
+          cp "$ANDROID_HOME/build-tools/36.0.0/lib/apksigner.jar" out/tools/apksigner.jar
+          cp "$ANDROID_HOME/build-tools/36.0.0/zipalign" out/tools/zipalign
+          cp "$ANDROID_HOME/build-tools/36.0.0/aapt2" out/tools/aapt2
+          cp "$ANDROID_HOME/build-tools/36.0.0/dexdump" out/tools/dexdump
+          chmod +x out/tools/zipalign out/tools/aapt2 out/tools/dexdump
+          ldd "$ANDROID_HOME/build-tools/36.0.0/aapt2" > out/tools/aapt2-ldd.txt || true
+          ldd "$ANDROID_HOME/build-tools/36.0.0/zipalign" > out/tools/zipalign-ldd.txt || true
+          ldd "$ANDROID_HOME/build-tools/36.0.0/dexdump" > out/tools/dexdump-ldd.txt || true
+          find "$ANDROID_HOME" -name 'libc++.so' -type f -print -quit | xargs -r -I{} cp {} out/tools/libc++.so
+          sha256sum out/* out/tools/* 2>/dev/null > out/SHA256.txt || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: s26-alpha6-unified-shim
+          path: out/
