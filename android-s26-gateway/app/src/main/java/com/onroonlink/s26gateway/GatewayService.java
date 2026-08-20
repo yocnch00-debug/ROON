@@ -2,6 +2,7 @@ package com.onroonlink.s26gateway;
 
 import android.app.*;
 import android.content.*;
+import android.net.*;
 import android.os.*;
 import java.io.*;
 import java.net.*;
@@ -17,9 +18,6 @@ public class GatewayService extends Service {
     private static final int DEFAULT_PC_PORT=51920;
     private static final String PC_LAN="192.168.50.84";
     private static final String PC_LAN_PREFIX="192.168.50.";
-    // Existing PHONE RoonLink VPN's PC-side internal address.
-    // This is the proven external path used by PHONE RoonLink; the S26 transport now
-    // prefers it whenever we are not on the PC LAN, avoiding dependence on router TCP hairpin/public routing.
     private static final String PHONE_VPN_PC="10.88.10.1";
     private static final String PHONE_VPN_LOCAL_PREFIX="192.0.0.";
 
@@ -50,7 +48,7 @@ public class GatewayService extends Service {
     }
 
     private void serverLoop(){
-        status("APP","OK","TRANSPORT ONLY · 외부망 PHONE VPN 내부경로 우선 · Roon/SOOD 처리 없음");
+        status("APP","OK","TRANSPORT ONLY · 외부망 DIRECT 물리망 우선 · PHONE VPN 유지 · Roon/SOOD 처리 없음");
         while(running){
             try{
                 ServerSocket ss=new ServerSocket();
@@ -126,34 +124,87 @@ public class GatewayService extends Service {
         log("경로판정 · PC_LAN="+onPcLan+" · PHONE_VPN="+phoneVpnSeen);
 
         if(onPcLan){
-            // Preserve the exact path that already proved stable at home.
+            // Keep the exact home path that already played successfully.
             try{return connectPlain(PC_LAN,DEFAULT_PC_PORT,"PC LAN",1800);}
             catch(IOException e){last=e;log("LAN 경로 실패: "+shortErr(e));}
 
-            // If the LAN is momentarily unavailable, fall back to the same PHONE VPN path used outside.
-            try{return connectPlain(PHONE_VPN_PC,DEFAULT_PC_PORT,"PHONE VPN INTERNAL",2200);}
-            catch(IOException e){last=e;log("PHONE VPN 내부경로 실패: "+shortErr(e));}
+            // If home LAN is unavailable, still prefer a physical network-bound public socket.
+            try{return connectPhysical(publicHost,publicPort,3500);}
+            catch(IOException e){last=e;log("DIRECT 물리망 실패: "+shortErr(e));}
 
-            if(!(PC_LAN.equals(publicHost)&&DEFAULT_PC_PORT==publicPort)){
-                try{return connectPlain(publicHost,publicPort,"PUBLIC",4200);}
-                catch(IOException e){last=e;log("PUBLIC 경로 실패: "+shortErr(e));}
-            }
+            try{return connectPlain(publicHost,publicPort,"PUBLIC DEFAULT",4200);}
+            catch(IOException e){last=e;log("PUBLIC 기본경로 실패: "+shortErr(e));}
         }else{
-            // External/mobile condition: first reuse the already-proven PHONE RoonLink VPN path.
-            // This avoids depending on router-side TCP 51920 exposure and reproduces the logical path
-            // that the working PHONE RoonLink already uses.
-            try{return connectPlain(PHONE_VPN_PC,DEFAULT_PC_PORT,
-                    phoneVpnSeen?"PHONE VPN INTERNAL":"PHONE VPN INTERNAL (probe)",2200);}
+            // External/mobile: the long-lived R8 mux must NOT ride inside PHONE VPN.
+            // Bind this socket explicitly to a validated non-VPN physical Network.
+            try{return connectPhysical(publicHost,publicPort,4200);}
+            catch(IOException e){last=e;log("DIRECT 물리망 실패: "+shortErr(e));}
+
+            // Safety fallback only. This may route through PHONE VPN and can be unstable,
+            // but retains a last-resort path instead of failing immediately.
+            try{return connectPlain(publicHost,publicPort,"PUBLIC VPN-FALLBACK",4200);}
+            catch(IOException e){last=e;log("PUBLIC VPN fallback 실패: "+shortErr(e));}
+
+            // Legacy internal probe is last because it is not reachable on every PHONE build.
+            try{return connectPlain(PHONE_VPN_PC,DEFAULT_PC_PORT,"PHONE VPN INTERNAL-LAST",2200);}
             catch(IOException e){last=e;log("PHONE VPN 내부경로 실패: "+shortErr(e));}
-
-            // Keep the old public path as a safety fallback.
-            try{return connectPlain(publicHost,publicPort,"PUBLIC FALLBACK",4200);}
-            catch(IOException e){last=e;log("PUBLIC fallback 실패: "+shortErr(e));}
-
-            try{return connectPlain(PC_LAN,DEFAULT_PC_PORT,"PC LAN fallback",1800);}
-            catch(IOException e){last=e;log("LAN fallback 실패: "+shortErr(e));}
         }
         throw new IOException("PC Relay 경로 없음",last);
+    }
+
+    private PcConnection connectPhysical(String host,int port,int timeoutMs)throws IOException{
+        ConnectivityManager cm=(ConnectivityManager)getSystemService(CONNECTIVITY_SERVICE);
+        if(cm==null)throw new IOException("ConnectivityManager 없음");
+        ArrayList<PhysicalCandidate> candidates=new ArrayList<>();
+        try{
+            for(Network n:cm.getAllNetworks()){
+                NetworkCapabilities nc=cm.getNetworkCapabilities(n);
+                if(nc==null)continue;
+                if(nc.hasTransport(NetworkCapabilities.TRANSPORT_VPN))continue;
+                if(!nc.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET))continue;
+                LinkProperties lp=cm.getLinkProperties(n);
+                String ipv4=firstIpv4(lp);
+                if(ipv4==null)continue;
+                int score=0;
+                String kind="PHYSICAL";
+                if(nc.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)){score+=300;kind="CELLULAR";}
+                else if(nc.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)){score+=200;kind="WIFI";}
+                else if(nc.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)){score+=100;kind="ETHERNET";}
+                if(nc.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED))score+=50;
+                if(nc.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_RESTRICTED))score+=10;
+                candidates.add(new PhysicalCandidate(n,kind,ipv4,score));
+            }
+        }catch(Throwable t){throw new IOException("물리망 탐색 실패: "+shortErr(t),t);}
+        if(candidates.isEmpty())throw new IOException("사용 가능한 non-VPN 물리망 없음");
+        candidates.sort((a,b)->Integer.compare(b.score,a.score));
+
+        IOException last=null;
+        for(PhysicalCandidate c:candidates){
+            Socket s=new Socket();
+            try{
+                log("PC Relay DIRECT 시도 → "+host+":"+port+" ["+c.kind+" / "+c.ipv4+"]");
+                c.network.bindSocket(s);
+                s.connect(new InetSocketAddress(host,port),timeoutMs);
+                s.setTcpNoDelay(true);s.setKeepAlive(true);
+                String label=host+":"+port+" · DIRECT "+c.kind;
+                log("PC Relay DIRECT 성공 → "+label+" · local="+s.getLocalSocketAddress());
+                return new PcConnection(s,label);
+            }catch(IOException e){
+                last=e;log("DIRECT "+c.kind+" 실패: "+shortErr(e));closeQuiet(s);
+            }catch(Throwable t){
+                last=new IOException(shortErr(t),t);log("DIRECT "+c.kind+" 실패: "+shortErr(t));closeQuiet(s);
+            }
+        }
+        throw new IOException("non-VPN 물리망 direct 실패",last);
+    }
+
+    private static String firstIpv4(LinkProperties lp){
+        if(lp==null)return null;
+        for(LinkAddress la:lp.getLinkAddresses()){
+            InetAddress a=la.getAddress();
+            if(a instanceof Inet4Address&&!a.isLoopbackAddress())return a.getHostAddress();
+        }
+        return null;
     }
 
     private PcConnection connectPlain(String host,int port,String via,int timeoutMs)throws IOException{
@@ -193,9 +244,15 @@ public class GatewayService extends Service {
                 if(n==0)continue;
                 out.write(buf,0,n);out.flush();
             }
-        }catch(Throwable t){if(running&&activeSeq==seq)log(name+" 종료: "+shortErr(t));}
-        finally{closeQuiet(from);closeQuiet(to);}
+            if(running&&activeSeq==seq)log(name+" EOF");
+        }catch(Throwable t){
+            if(running&&activeSeq==seq)
+                log(name+" 종료: "+shortErr(t)+" · fromLocal="+safeLocal(from)+" · fromRemote="+safeRemote(from)+" · toRemote="+safeRemote(to));
+        }finally{closeQuiet(from);closeQuiet(to);}
     }
+
+    private static String safeLocal(Socket s){try{return String.valueOf(s.getLocalSocketAddress());}catch(Throwable t){return"?";}}
+    private static String safeRemote(Socket s){try{return String.valueOf(s.getRemoteSocketAddress());}catch(Throwable t){return"?";}}
 
     private void status(String key,String state,String detail){
         Intent i=new Intent(ACTION_STATUS);i.setPackage(getPackageName());
@@ -230,5 +287,9 @@ public class GatewayService extends Service {
     private static class PcConnection{
         final Socket socket;final String label;
         PcConnection(Socket s,String l){socket=s;label=l;}
+    }
+    private static class PhysicalCandidate{
+        final Network network;final String kind;final String ipv4;final int score;
+        PhysicalCandidate(Network n,String k,String ip,int s){network=n;kind=k;ipv4=ip;score=s;}
     }
 }
