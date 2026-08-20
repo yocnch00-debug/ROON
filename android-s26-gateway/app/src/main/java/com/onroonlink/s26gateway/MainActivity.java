@@ -46,7 +46,7 @@ public class MainActivity extends Activity {
         ScrollView sv=new ScrollView(this);
         LinearLayout root=new LinearLayout(this);root.setOrientation(LinearLayout.VERTICAL);root.setPadding(dp(20),dp(24),dp(20),dp(30));sv.addView(root);
         TextView title=new TextView(this);title.setText("ON Roon S26 Transport");title.setTextSize(24);title.setTextColor(Color.BLACK);title.setTypeface(null,1);root.addView(title);
-        TextView sub=new TextView(this);sub.setText("FINAL 2.0 R1 · R8↔PC 전송만 담당 · Roon/SOOD 처리 안 함 · 기존 NetShare/PHONE RoonLink 유지");sub.setTextSize(14);sub.setPadding(0,dp(4),0,dp(14));root.addView(sub);
+        TextView sub=new TextView(this);sub.setText("FINAL 2.2 · 외부망은 PC Relay TCP만 실제 물리망(DIRECT)으로 분리 · PHONE RoonLink VPN/NetShare 유지");sub.setTextSize(14);sub.setPadding(0,dp(4),0,dp(14));root.addView(sub);
 
         SharedPreferences sp=getSharedPreferences("gateway",MODE_PRIVATE);
         TextView hostLabel=new TextView(this);hostLabel.setText("PC Relay 외부 주소 / 포트");hostLabel.setTextSize(13);hostLabel.setTypeface(null,1);root.addView(hostLabel);
@@ -61,9 +61,9 @@ public class MainActivity extends Activity {
         save.setOnClickListener(v->{saveSettings();startGateway();appendLog("주소 저장 완료 · 현재 연결은 끊지 않음");Toast.makeText(this,"주소 저장 완료",Toast.LENGTH_SHORT).show();});
         root.addView(save);
 
-        TextView note=new TextView(this);note.setText("※ 이 앱은 UDP 9003/Roon discovery를 건드리지 않습니다. Roon 처리는 PC Relay와 R8 Sidecar만 담당합니다.");note.setTextSize(13);note.setPadding(0,dp(10),0,0);root.addView(note);
+        TextView note=new TextView(this);note.setText("※ PHONE RoonLink VPN은 그대로 유지합니다. 이 앱의 PC Relay용 TCP만 non-VPN CELLULAR/WIFI 물리망에 직접 바인드합니다. UDP 9003/Roon discovery는 건드리지 않습니다.");note.setTextSize(13);note.setPadding(0,dp(10),0,0);root.addView(note);
         TextView lh=new TextView(this);lh.setText("실시간 로그");lh.setTextSize(16);lh.setTypeface(null,1);lh.setPadding(0,dp(18),0,dp(6));root.addView(lh);
-        logView=new TextView(this);logView.setTextSize(12);logView.setTextIsSelectable(true);logView.setPadding(dp(10),dp(10),dp(10),dp(10));logView.setBackgroundColor(Color.rgb(245,245,245));root.addView(logView,new LinearLayout.LayoutParams(-1,dp(320)));
+        logView=new TextView(this);logView.setTextSize(12);logView.setTextIsSelectable(true);logView.setPadding(dp(10),dp(10),dp(10),dp(10));logView.setBackgroundColor(Color.rgb(245,245,245));root.addView(logView,new LinearLayout.LayoutParams(-1,dp(360)));
         return sv;
     }
 
@@ -76,7 +76,7 @@ public class MainActivity extends Activity {
 
     private void addRow(LinearLayout root,String key,String name){TextView v=new TextView(this);v.setText("○  "+name+"\n    대기");v.setTextSize(16);v.setPadding(dp(4),dp(9),dp(4),dp(9));root.addView(v);rows.put(key,v);}
     private String label(String k){switch(k){case"APP":return"앱 구조";case"LISTEN":return"R8 수신";case"PC":return"PC Relay 경로";case"R8":return"R8 연결";default:return k;}}
-    private void appendLog(String s){if(s==null||logView==null)return;String old=logView.getText().toString();String line=tf.format(new Date())+"  "+s+"\n";if(old.length()>20000)old=old.substring(old.length()-12000);logView.setText(old+line);}
+    private void appendLog(String s){if(s==null||logView==null)return;String old=logView.getText().toString();String line=tf.format(new Date())+"  "+s+"\n";if(old.length()>24000)old=old.substring(old.length()-15000);logView.setText(old+line);}
     private void startGateway(){Intent i=new Intent(this,GatewayService.class);if(Build.VERSION.SDK_INT>=26)startForegroundService(i);else startService(i);}
     private int dp(int x){return(int)(x*getResources().getDisplayMetrics().density+0.5f);}
 }
