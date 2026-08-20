@@ -40,9 +40,11 @@ jobs:
           cp "$ANDROID_HOME/build-tools/36.0.0/lib/apksigner.jar" out/tools/apksigner.jar
           cp "$ANDROID_HOME/build-tools/36.0.0/zipalign" out/tools/zipalign
           cp "$ANDROID_HOME/build-tools/36.0.0/aapt2" out/tools/aapt2
-          chmod +x out/tools/zipalign out/tools/aapt2
+          cp "$ANDROID_HOME/build-tools/36.0.0/dexdump" out/tools/dexdump
+          chmod +x out/tools/zipalign out/tools/aapt2 out/tools/dexdump
           ldd "$ANDROID_HOME/build-tools/36.0.0/aapt2" > out/tools/aapt2-ldd.txt || true
           ldd "$ANDROID_HOME/build-tools/36.0.0/zipalign" > out/tools/zipalign-ldd.txt || true
+          ldd "$ANDROID_HOME/build-tools/36.0.0/dexdump" > out/tools/dexdump-ldd.txt || true
           find "$ANDROID_HOME" -name 'libc++.so' -type f -print -quit | xargs -r -I{} cp {} out/tools/libc++.so
           sha256sum out/* out/tools/* 2>/dev/null > out/SHA256.txt || true
       - uses: actions/upload-artifact@v4
