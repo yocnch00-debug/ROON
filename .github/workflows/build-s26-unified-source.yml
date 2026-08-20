@@ -1,0 +1,65 @@
+name: Build S26 Unified Source
+
+on:
+  push:
+    branches: [ s26-unified-source-rebuild ]
+    paths:
+      - 's26-unified-source/**'
+      - '.github/workflows/build-s26-unified-source.yml'
+      - '.github/signing/**'
+  pull_request:
+    paths:
+      - 's26-unified-source/**'
+      - '.github/workflows/build-s26-unified-source.yml'
+      - '.github/signing/**'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - name: Install Android SDK 35
+        run: yes | sdkmanager --licenses >/dev/null && sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+      - name: Build release APK from source
+        working-directory: s26-unified-source
+        run: gradle --no-daemon :app:assembleRelease
+      - name: Align and sign with stable test key
+        run: |
+          set -euxo pipefail
+          mkdir -p out signing
+          base64 -d .github/signing/onroonlink-test-key.pk8.b64 > signing/onroonlink-test-key.pk8
+          cp .github/signing/onroonlink-test-cert.pem signing/onroonlink-test-cert.pem
+          UNSIGNED='s26-unified-source/app/build/outputs/apk/release/app-release-unsigned.apk'
+          ALIGNED='out/aligned-unsigned.apk'
+          FINAL='out/ON-RoonLink-S26-UNIFIED-STABLE-v1.2.apk'
+          test -s "$UNSIGNED"
+          "$ANDROID_HOME/build-tools/35.0.0/zipalign" -f -v 4 "$UNSIGNED" "$ALIGNED"
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" sign \
+            --key signing/onroonlink-test-key.pk8 \
+            --cert signing/onroonlink-test-cert.pem \
+            --v1-signing-enabled false \
+            --v2-signing-enabled true \
+            --v3-signing-enabled true \
+            --out "$FINAL" "$ALIGNED"
+      - name: Verify final APK
+        run: |
+          set -euxo pipefail
+          FINAL='out/ON-RoonLink-S26-UNIFIED-STABLE-v1.2.apk'
+          "$ANDROID_HOME/build-tools/35.0.0/aapt2" dump badging "$FINAL" > out/aapt2.txt
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$FINAL" > out/apksigner.txt
+          "$ANDROID_HOME/build-tools/35.0.0/zipalign" -c -v 4 "$FINAL" > out/zipalign.txt
+          sha256sum "$FINAL" > out/SHA256.txt
+          unzip -t "$FINAL" > out/unzip-test.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: s26-unified-stable-v1.2
+          path: out/
