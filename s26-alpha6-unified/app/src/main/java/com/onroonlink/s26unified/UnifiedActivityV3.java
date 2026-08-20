@@ -26,6 +26,8 @@ public final class UnifiedActivityV3 extends Activity {
     private static final String PHONE_SERVICE = "com.onroonlink.nativev1udp.TunnelService";
     private static final String PHONE_ACTIVITY = "com.onroonlink.nativev1udp.MainActivity";
     private static final String GATEWAY_SERVICE = "com.onroonlink.s26unified.StableGatewayService";
+    private static final String CTRL_PREF = "unified_ctrl_v12";
+    private static final String KEY_ENABLED = "user_enabled";
     private final Handler handler = new Handler(Looper.getMainLooper());
 
     private RadioGroup roleGroup;
@@ -111,11 +113,21 @@ public final class UnifiedActivityV3 extends Activity {
 
     private void syncActualState() {
         boolean vpn = hasAlpha6VpnAddress();
-        setSwitchSilently(vpn);
+        SharedPreferences ctrl = getSharedPreferences(CTRL_PREF, MODE_PRIVATE);
+        boolean enabled = ctrl.getBoolean(KEY_ENABLED, false);
+
         if (vpn) {
+            if (!enabled) ctrl.edit().putBoolean(KEY_ENABLED, true).apply();
+            setSwitchSilently(true);
             phoneStatus.setText("● PHONE: 연결됨 · 10.89.0.x"); phoneStatus.setTextColor(Color.rgb(24,135,68));
             startGatewaySafe();
+        } else if (enabled || pendingConnect) {
+            // alpha6 has its own reconnect loop. During a brief interface gap, never start it again.
+            setSwitchSilently(true);
+            phoneStatus.setText("○ PHONE: 기존 터널 재연결 대기 · 재시작 안 함"); phoneStatus.setTextColor(Color.GRAY);
+            gatewayStatus.setText("○ R8 Transport: PHONE VPN 복구 대기");
         } else {
+            setSwitchSilently(false);
             phoneStatus.setText("○ PHONE: 대기중"); phoneStatus.setTextColor(Color.GRAY);
         }
     }
@@ -125,6 +137,7 @@ public final class UnifiedActivityV3 extends Activity {
         if(!pass.matches("\\d{4,8}")){ toast("비밀번호는 숫자 4~8자리"); setSwitchSilently(false); return; }
         String role=roleGroup.getCheckedRadioButtonId()==1002?"DAP":"PHONE";
         getSharedPreferences("onrl6",MODE_PRIVATE).edit().putString("role",role).putString("password",pass).apply();
+        getSharedPreferences(CTRL_PREF, MODE_PRIVATE).edit().putBoolean(KEY_ENABLED,true).apply();
 
         if(hasAlpha6VpnAddress()) {
             appendLog("PHONE VPN 이미 활성 · 재시작하지 않음");
@@ -138,32 +151,62 @@ public final class UnifiedActivityV3 extends Activity {
         if(prep!=null) startActivityForResult(prep,REQ_VPN); else startPhoneOriginal();
     }
 
-    @Override protected void onActivityResult(int r,int result,Intent data){ super.onActivityResult(r,result,data); if(r!=REQ_VPN)return; if(result==RESULT_OK&&pendingConnect) startPhoneOriginal(); else { pendingConnect=false; setSwitchSilently(false); } }
+    @Override protected void onActivityResult(int r,int result,Intent data){
+        super.onActivityResult(r,result,data);
+        if(r!=REQ_VPN)return;
+        if(result==RESULT_OK&&pendingConnect) startPhoneOriginal();
+        else {
+            pendingConnect=false;
+            getSharedPreferences(CTRL_PREF,MODE_PRIVATE).edit().putBoolean(KEY_ENABLED,false).apply();
+            setSwitchSilently(false);
+        }
+    }
 
     private void startPhoneOriginal(){
         pendingConnect=false;
+        setSwitchSilently(true);
         try {
             Intent i=componentIntent(PHONE_SERVICE);
             if(Build.VERSION.SDK_INT>=26) startForegroundService(i); else startService(i);
-            appendLog("PHONE 연결 요청 · alpha6 원본 방식");
+            appendLog("PHONE 연결 요청 · alpha6 원본 방식 · 이후 중복 start 금지");
             waitTicks=0; handler.removeCallbacks(vpnWaiter); handler.post(vpnWaiter);
-        } catch(Throwable e){ appendLog("PHONE 시작 실패: "+e); setSwitchSilently(false); }
+        } catch(Throwable e){
+            appendLog("PHONE 시작 실패: "+e);
+            getSharedPreferences(CTRL_PREF,MODE_PRIVATE).edit().putBoolean(KEY_ENABLED,false).apply();
+            setSwitchSilently(false);
+        }
     }
 
     private final Runnable vpnWaiter=new Runnable(){ @Override public void run(){
         if(!masterSwitch.isChecked())return;
-        if(hasAlpha6VpnAddress()){ phoneStatus.setText("● PHONE: 연결됨 · 10.89.0.x"); startGatewaySafe(); return; }
-        waitTicks++; phoneStatus.setText("○ PHONE: 연결 확인 중…");
-        if(waitTicks<80) handler.postDelayed(this,250); else { appendLog("PHONE VPN 확인 실패"); setSwitchSilently(false); }
+        if(hasAlpha6VpnAddress()){
+            phoneStatus.setText("● PHONE: 연결됨 · 10.89.0.x");
+            phoneStatus.setTextColor(Color.rgb(24,135,68));
+            startGatewaySafe();
+            return;
+        }
+        waitTicks++; phoneStatus.setText("○ PHONE: 연결 확인/재연결 대기…");
+        if(waitTicks<120) handler.postDelayed(this,250);
+        else {
+            // Do not restart TunnelService: alpha6 itself owns reconnect/backoff.
+            appendLog("PHONE 인터페이스 장기 대기 · alpha6 자체 재연결에 맡김");
+            handler.postDelayed(this,2000);
+        }
     }};
 
     private void startGatewaySafe(){
-        try { Intent i=componentIntent(GATEWAY_SERVICE); if(Build.VERSION.SDK_INT>=26) startForegroundService(i); else startService(i); gatewayStatus.setText("● R8 Transport: 실행중 · 51921"); }
-        catch(Throwable e){ gatewayStatus.setText("○ R8 Transport 시작 실패"); appendLog(String.valueOf(e)); }
+        try {
+            Intent i=componentIntent(GATEWAY_SERVICE);
+            if(Build.VERSION.SDK_INT>=26) startForegroundService(i); else startService(i);
+            gatewayStatus.setText("● R8 Transport: 실행중 · 51921");
+            gatewayStatus.setTextColor(Color.rgb(24,135,68));
+        } catch(Throwable e){ gatewayStatus.setText("○ R8 Transport 시작 실패"); appendLog(String.valueOf(e)); }
     }
 
     private void disconnectAll(){
+        pendingConnect=false;
         handler.removeCallbacks(vpnWaiter);
+        getSharedPreferences(CTRL_PREF,MODE_PRIVATE).edit().putBoolean(KEY_ENABLED,false).apply();
         try{ stopService(componentIntent(GATEWAY_SERVICE)); }catch(Throwable ignored){}
         try{ stopService(componentIntent(PHONE_SERVICE)); }catch(Throwable ignored){}
         gatewayStatus.setText("○ R8 Transport: 중지"); phoneStatus.setText("○ PHONE: 연결 끊김"); appendLog("R8 Gateway → PHONE 순서로 중지");
