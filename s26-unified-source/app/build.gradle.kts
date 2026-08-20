@@ -7,8 +7,8 @@ android {
         applicationId = "com.onroonlink.s26source"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0-source-rebuild"
+        versionCode = 2
+        versionName = "1.1-gateway-always-on"
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
