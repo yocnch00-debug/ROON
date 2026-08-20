@@ -7,7 +7,7 @@ android {
         applicationId = "com.onroonlink.s26unifiedclean0820"
         minSdk = 26
         targetSdk = 36
-        versionCode = 2082003
-        versionName = "1.2-alpha6-stable-gateway"
+        versionCode = 2082004
+        versionName = "1.2-alpha6-stable-gateway-r2"
     }
 }
