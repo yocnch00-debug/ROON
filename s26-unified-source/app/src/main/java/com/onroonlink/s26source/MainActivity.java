@@ -65,7 +65,10 @@ public class MainActivity extends Activity {
         onOff.setChecked(sp.getBoolean("desired_on", false));
         internalToggle = false;
         status.setText(onOff.isChecked() ? "ON · 연결 복구중" : "OFF");
-        if (onOff.isChecked()) new Handler(Looper.getMainLooper()).postDelayed(this::prepare, 250);
+        if (onOff.isChecked()) {
+            startGateway();
+            new Handler(Looper.getMainLooper()).postDelayed(this::prepare, 250);
+        }
     }
 
     @Override protected void onResume() {
@@ -90,7 +93,7 @@ public class MainActivity extends Activity {
 
         TextView title = text("ON RoonLink S26 · PHONE + R8", 24, Color.BLACK);
         root.addView(title);
-        TextView desc = text("PHONE Native UDP와 R8 Transport를 한 앱에서 실행합니다.\n설정은 한 번 저장한 뒤 아래 ON/OFF만 사용하면 됩니다.", 13, Color.DKGRAY);
+        TextView desc = text("PHONE Native UDP와 R8 Transport를 한 앱에서 실행합니다.\nR8 51921 Gateway는 PHONE 재연결과 무관하게 항상 유지됩니다.", 13, Color.DKGRAY);
         desc.setPadding(0, dp(8), 0, dp(14));
         root.addView(desc);
 
@@ -155,10 +158,12 @@ public class MainActivity extends Activity {
                     return;
                 }
                 getSharedPreferences("onrl6",0).edit().putBoolean("desired_on", true).apply();
+                startGateway();
                 prepare();
             } else {
                 getSharedPreferences("onrl6",0).edit().putBoolean("desired_on", false).apply();
                 stopService(new Intent(this, TunnelService.class));
+                stopService(new Intent(this, AlwaysGatewayService.class));
                 status.setText("OFF");
                 gatewayStatus.setText("R8 Transport · 중지");
             }
@@ -199,14 +204,22 @@ public class MainActivity extends Activity {
         return true;
     }
 
+    private void startGateway() {
+        Intent g = new Intent(this, AlwaysGatewayService.class);
+        if (Build.VERSION.SDK_INT >= 26) startForegroundService(g); else startService(g);
+        gatewayStatus.setText("R8 Transport · 51921 listener 시작 요청");
+    }
+
     private void prepare() {
         if (!saveSettings(false)) return;
+        startGateway();
         Intent i = VpnService.prepare(this);
         if (i != null) startActivityForResult(i, VPN_REQ);
         else startTunnel();
     }
 
     private void startTunnel() {
+        startGateway();
         Intent i = new Intent(this, TunnelService.class);
         if (Build.VERSION.SDK_INT >= 26) startForegroundService(i); else startService(i);
         status.setText("ON · 연결 요청됨");
@@ -218,6 +231,7 @@ public class MainActivity extends Activity {
             if (c == RESULT_OK) startTunnel();
             else {
                 getSharedPreferences("onrl6",0).edit().putBoolean("desired_on", false).apply();
+                stopService(new Intent(this, AlwaysGatewayService.class));
                 setSwitch(false);
                 status.setText("VPN 권한 거부됨");
             }
