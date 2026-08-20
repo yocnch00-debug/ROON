@@ -7,6 +7,11 @@ on:
     paths:
       - 's26-unified-shim/**'
       - '.github/workflows/build-s26-unified-shim.yml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 's26-unified-shim/**'
+      - '.github/workflows/build-s26-unified-shim.yml'
 
 jobs:
   build:
