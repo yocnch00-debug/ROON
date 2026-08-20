@@ -5,6 +5,7 @@ import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.Service;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.os.Build;
 import android.os.IBinder;
 
@@ -24,8 +25,8 @@ import java.util.concurrent.atomic.AtomicLong;
 public final class StableGatewayService extends Service {
     public static final String ACTION = "com.onroonlink.s26gateway.STATUS";
     private static final int LISTEN_PORT = 51921;
-    private static final int PC_PORT = 51920;
-    private static final String PUBLIC_PC = "121.133.225.83";
+    private static final int DEFAULT_PC_PORT = 51920;
+    private static final String DEFAULT_PUBLIC_PC = "121.133.225.83";
     private static final String HOME_PC = "192.168.50.84";
     private static final String LEGACY_INTERNAL_PC = "10.88.10.1";
     private static final String CHANNEL = "on_s26_gateway_stable";
@@ -52,9 +53,7 @@ public final class StableGatewayService extends Service {
         if (running.compareAndSet(false, true)) pool.execute(this::serverLoop);
     }
 
-    @Override public int onStartCommand(Intent intent, int flags, int startId) {
-        return START_STICKY;
-    }
+    @Override public int onStartCommand(Intent intent, int flags, int startId) { return START_STICKY; }
 
     @Override public void onDestroy() {
         running.set(false);
@@ -109,7 +108,7 @@ public final class StableGatewayService extends Service {
             Session candidate = new Session(id, r8, pc);
             synchronized (activeLock) {
                 if (isLive(active)) {
-                    status("R8", "session " + id + " 대기 중 기존 연결 복구됨 · 새 접속 폐기");
+                    status("R8", "session " + id + " 준비 중 기존 연결 복구 · 새 접속 폐기");
                     close(r8); close(pc); return;
                 }
                 active = candidate;
@@ -126,30 +125,35 @@ public final class StableGatewayService extends Service {
     }
 
     private Socket connectBest() {
+        SharedPreferences p = getSharedPreferences("gateway", MODE_PRIVATE);
+        String publicPc = p.getString("pc_host", DEFAULT_PUBLIC_PC);
+        int pcPort = p.getInt("pc_port", DEFAULT_PC_PORT);
+        if (publicPc == null || publicPc.trim().isEmpty()) publicPc = DEFAULT_PUBLIC_PC;
+
         if (hasPrefix("192.168.50.")) {
-            Socket s = tryConnect(HOME_PC, 1200, "PC LAN");
+            Socket s = tryConnect(HOME_PC, pcPort, 1200, "PC LAN");
             if (s != null) return s;
-            s = tryConnect(PUBLIC_PC, 2500, "PUBLIC FALLBACK");
+            s = tryConnect(publicPc, pcPort, 2500, "PUBLIC FALLBACK");
             if (s != null) return s;
         } else {
-            // alpha6 VPN routes only 10.89.0.0/24 + multicast. 10.88.10.1 is not a valid primary path here.
-            Socket s = tryConnect(PUBLIC_PC, 2500, "PUBLIC");
+            // alpha6 routes its Roon VPN subnet/multicast, not the old 10.88.10.1 transport path.
+            Socket s = tryConnect(publicPc, pcPort, 2500, "PUBLIC");
             if (s != null) return s;
-            // Legacy emergency fallback only after public path actually fails.
-            s = tryConnect(LEGACY_INTERNAL_PC, 1000, "LEGACY INTERNAL");
+            // Keep old endpoint only as a short emergency fallback, never as the 2.2s primary delay.
+            s = tryConnect(LEGACY_INTERNAL_PC, pcPort, 1000, "LEGACY INTERNAL");
             if (s != null) return s;
-            s = tryConnect(HOME_PC, 1000, "LAN LAST FALLBACK");
+            s = tryConnect(HOME_PC, pcPort, 1000, "LAN LAST FALLBACK");
             if (s != null) return s;
         }
         return null;
     }
 
-    private Socket tryConnect(String host, int timeoutMs, String label) {
+    private Socket tryConnect(String host, int port, int timeoutMs, String label) {
         Socket s = new Socket();
         try {
             tune(s);
-            status("PC", label + " 접속 → " + host + ":" + PC_PORT);
-            s.connect(new InetSocketAddress(host, PC_PORT), timeoutMs);
+            status("PC", label + " 접속 → " + host + ":" + port);
+            s.connect(new InetSocketAddress(host, port), timeoutMs);
             status("PC", label + " 성공 · local=" + s.getLocalAddress());
             return s;
         } catch (Throwable e) {
@@ -179,9 +183,7 @@ public final class StableGatewayService extends Service {
     private void closeSession(Session s, String why) {
         if (s == null || !s.closed.compareAndSet(false, true)) return;
         close(s.r8); close(s.pc);
-        synchronized (activeLock) {
-            if (active == s) active = null;
-        }
+        synchronized (activeLock) { if (active == s) active = null; }
         status("WAIT", why + " · 새 R8 접속 대기");
         updateNotification("R8 대기");
     }
