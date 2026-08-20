@@ -18,6 +18,7 @@ import javax.crypto.spec.OAEPParameterSpec;
 import javax.crypto.spec.PSource;
 
 public class TunnelService extends VpnService {
+    public static final String ACTION_STATUS = "com.onroonlink.s26source.STATUS";
     static final String HOST = "121.133.225.83";
     static final int PORT = 51900;
     static final String MAGIC = "ONR6";
