@@ -4,7 +4,7 @@ android {
     namespace = "com.onroonlink.app"
     compileSdk = 36
     defaultConfig {
-        applicationId = "com.onroonlink.app"
+        applicationId = "com.onroonlink.unified"
         minSdk = 24
         targetSdk = 36
         versionCode = 85
