@@ -22,6 +22,15 @@
         </activity>
 
         <service
+            android:name=".AlwaysGatewayService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Persistent local R8 TCP gateway on port 51921 independent of VPN reconnect state" />
+        </service>
+
+        <service
             android:name=".TunnelService"
             android:permission="android.permission.BIND_VPN_SERVICE"
             android:exported="false"
