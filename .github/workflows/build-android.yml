@@ -1,12 +1,23 @@
-name: Build Android APK
+name: Build S26 External Transport v2.1
 
 on:
   push:
+    branches: [ netshare-sidecar-v1 ]
+    paths:
+      - 'android-s26-gateway/**'
+      - '.github/workflows/build-android.yml'
+  pull_request:
     branches: [ main ]
+    paths:
+      - 'android-s26-gateway/**'
+      - '.github/workflows/build-android.yml'
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
-  build:
+  s26-external:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -23,13 +34,40 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.13'
-      - name: Build debug APK
-        working-directory: android-app
+      - name: Restore stable signing key
+        run: |
+          base64 -d android-sidecar/onroonlink-test.jks.b64 > android-s26-gateway/onroonlink-test.jks
+      - name: External route architecture checks
+        run: |
+          grep -q 'versionName = "2.1-external-phone-vpn-first"' android-s26-gateway/app/build.gradle.kts
+          grep -q 'PHONE_VPN_PC="10.88.10.1"' android-s26-gateway/app/src/main/java/com/onroonlink/s26gateway/GatewayService.java
+          grep -q 'PHONE VPN INTERNAL' android-s26-gateway/app/src/main/java/com/onroonlink/s26gateway/GatewayService.java
+          grep -q 'PC LAN' android-s26-gateway/app/src/main/java/com/onroonlink/s26gateway/GatewayService.java
+          grep -q 'PUBLIC FALLBACK' android-s26-gateway/app/src/main/java/com/onroonlink/s26gateway/GatewayService.java
+          if grep -Eq 'DatagramSocket|MulticastSocket|joinGroup|bindSocket\(' android-s26-gateway/app/src/main/java/com/onroonlink/s26gateway/GatewayService.java; then echo 'S26 must remain TCP transport-only'; exit 1; fi
+          if grep -Eq 'CHANGE_WIFI_MULTICAST_STATE|BIND_VPN_SERVICE|VpnService' android-s26-gateway/app/src/main/AndroidManifest.xml; then echo 'S26 must not own VPN/discovery'; exit 1; fi
+      - name: Build S26 v2.1 APK
+        working-directory: android-s26-gateway
         run: gradle --no-daemon :app:assembleDebug
-      - name: Collect APK
-        run: cp android-app/app/build/outputs/apk/debug/app-debug.apk ON-RoonLink-v0.4-debug.apk
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
+      - name: Verify APK signature and 16K alignment
+        run: |
+          APK=android-s26-gateway/app/build/outputs/apk/debug/app-debug.apk
+          $ANDROID_HOME/build-tools/36.0.0/apksigner verify --verbose "$APK"
+          $ANDROID_HOME/build-tools/36.0.0/zipalign -c -P 16 -v 4 "$APK"
+          $ANDROID_HOME/build-tools/36.0.0/aapt dump xmltree "$APK" AndroidManifest.xml > s26-manifest.txt
+          if grep -qE 'android.net.VpnService|BIND_VPN_SERVICE|CHANGE_WIFI_MULTICAST_STATE' s26-manifest.txt; then cat s26-manifest.txt; exit 1; fi
+      - name: Package S26 external transport
+        run: |
+          mkdir -p out
+          cp android-s26-gateway/app/build/outputs/apk/debug/app-debug.apk out/ON-Roon-S26-Transport-v2.1-EXTERNAL-PHONE-VPN-FIRST.apk
+          sha256sum out/ON-Roon-S26-Transport-v2.1-EXTERNAL-PHONE-VPN-FIRST.apk > out/SHA256.txt
+          printf '%s\n' \
+            'External/mobile: PHONE RoonLink VPN internal PC endpoint 10.88.10.1:51920 first.' \
+            'Home PC LAN: existing 192.168.50.84:51920 direct path remains first.' \
+            'Public 121.133.225.83:51920 is fallback only.' \
+            'No VpnService/SOOD/UDP discovery added; existing PHONE RoonLink and NetShare stay unchanged.' \
+            'Keep PC v2.6 and R8 v2.1 golden RAAT AUX engines unchanged.' > out/INSTALL.txt
+      - uses: actions/upload-artifact@v4
         with:
-          name: ON-RoonLink-v0.4-debug-apk
-          path: ON-RoonLink-v0.4-debug.apk
+          name: ON-Roon-S26-v2.1-EXTERNAL-PHONE-VPN-FIRST
+          path: out/
