@@ -13,13 +13,13 @@
         android:theme="@android:style/Theme.Material.Light.NoActionBar"
         android:label="ON RoonLink S26 Unified">
 
-        <activity android:name="com.onroonlink.s26unified.UnifiedActivity" android:exported="true">
+        <activity android:name="com.onroonlink.s26unified.UnifiedActivityV2" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
-
+        <activity android:name="com.onroonlink.s26unified.UnifiedActivity" android:exported="false" />
         <activity android:name="com.onroonlink.nativev1udp.MainActivity" android:exported="false" />
         <activity android:name="com.onroonlink.s26gateway.MainActivity" android:exported="false" />
 
