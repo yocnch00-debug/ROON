@@ -4,11 +4,11 @@ android {
     namespace = "com.onroonlink.s26source"
     compileSdk = 35
     defaultConfig {
-        applicationId = "com.onroonlink.s26source.gwfix11"
+        applicationId = "com.onroonlink.s26unified.stable"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.1-gateway-always-on-fresh-package"
+        versionCode = 100
+        versionName = "1.2-alpha6-exact-gateway"
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
