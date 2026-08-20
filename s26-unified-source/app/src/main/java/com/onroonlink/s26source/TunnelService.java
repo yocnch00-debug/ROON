@@ -19,10 +19,9 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.security.KeyFactory;
-import java.security.MessageDigest;
-import java.security.MGF1ParameterSpec;
 import java.security.PublicKey;
 import java.security.SecureRandom;
+import java.security.spec.MGF1ParameterSpec;
 import java.security.spec.X509EncodedKeySpec;
 import java.util.Arrays;
 import java.util.Base64;
@@ -71,13 +70,10 @@ public class TunnelService extends VpnService {
         role = sp.getString("role", "PHONE");
         password = sp.getString("password", "");
         startForeground(1006, notification("연결 준비중"));
-
-        // One-app integration rule: reopening the UI must never tear down a healthy tunnel.
         if (running.get()) {
             publish("PHONE", "ON · 기존 연결 유지", "TunnelService 중복 시작 요청 무시");
             return START_STICKY;
         }
-
         startTunnel();
         return START_STICKY;
     }
@@ -127,7 +123,6 @@ public class TunnelService extends VpnService {
         }
 
         sock = new DatagramSocket();
-        // Critical: only the encrypted PHONE outer socket bypasses this app's VPN.
         protect(sock);
         sock.connect(InetAddress.getByName(HOST), PORT);
         sock.setSoTimeout(4500);
@@ -165,7 +160,6 @@ public class TunnelService extends VpnService {
         tun = b.establish();
         if (tun == null) throw new IOException("VPN 생성 실패");
 
-        // The R8 bridge only exists while the PHONE VPN is actually established.
         if (gateway == null) gateway = new GatewayBridge(this);
         gateway.start();
 
@@ -243,7 +237,6 @@ public class TunnelService extends VpnService {
         new SecureRandom().nextBytes(temp);
         String plain = "ONR6PAIR|" + role + "|" + password + "|" +
                 Base64.getEncoder().withoutPadding().encodeToString(temp);
-
         byte[] pubDer = Base64.getDecoder().decode(SERVER_PUB_B64);
         PublicKey pub = KeyFactory.getInstance("RSA").generatePublic(new X509EncodedKeySpec(pubDer));
         Cipher rsa = Cipher.getInstance("RSA/ECB/OAEPWithSHA-256AndMGF1Padding");
