@@ -17,6 +17,11 @@ public class GatewayService extends Service {
     private static final int DEFAULT_PC_PORT=51920;
     private static final String PC_LAN="192.168.50.84";
     private static final String PC_LAN_PREFIX="192.168.50.";
+    // Existing PHONE RoonLink VPN's PC-side internal address.
+    // This is the proven external path used by PHONE RoonLink; the S26 transport now
+    // prefers it whenever we are not on the PC LAN, avoiding dependence on router TCP hairpin/public routing.
+    private static final String PHONE_VPN_PC="10.88.10.1";
+    private static final String PHONE_VPN_LOCAL_PREFIX="192.0.0.";
 
     private final ExecutorService workers=Executors.newCachedThreadPool();
     private final AtomicLong connectionSeq=new AtomicLong();
@@ -45,7 +50,7 @@ public class GatewayService extends Service {
     }
 
     private void serverLoop(){
-        status("APP","OK","TRANSPORT ONLY · Roon/SOOD 처리 없음 · 기존 NetShare/PHONE VPN 미변경");
+        status("APP","OK","TRANSPORT ONLY · 외부망 PHONE VPN 내부경로 우선 · Roon/SOOD 처리 없음");
         while(running){
             try{
                 ServerSocket ss=new ServerSocket();
@@ -116,28 +121,46 @@ public class GatewayService extends Service {
         if(publicPort<1||publicPort>65535)publicPort=DEFAULT_PC_PORT;
         IOException last=null;
         boolean onPcLan=hasAddressPrefix(PC_LAN_PREFIX);
+        boolean phoneVpnSeen=hasAddressPrefix(PHONE_VPN_LOCAL_PREFIX);
+
+        log("경로판정 · PC_LAN="+onPcLan+" · PHONE_VPN="+phoneVpnSeen);
 
         if(onPcLan){
-            try{return connectPlain(PC_LAN,DEFAULT_PC_PORT,"PC LAN");}
+            // Preserve the exact path that already proved stable at home.
+            try{return connectPlain(PC_LAN,DEFAULT_PC_PORT,"PC LAN",1800);}
             catch(IOException e){last=e;log("LAN 경로 실패: "+shortErr(e));}
+
+            // If the LAN is momentarily unavailable, fall back to the same PHONE VPN path used outside.
+            try{return connectPlain(PHONE_VPN_PC,DEFAULT_PC_PORT,"PHONE VPN INTERNAL",2200);}
+            catch(IOException e){last=e;log("PHONE VPN 내부경로 실패: "+shortErr(e));}
+
             if(!(PC_LAN.equals(publicHost)&&DEFAULT_PC_PORT==publicPort)){
-                try{return connectPlain(publicHost,publicPort,"PUBLIC");}
+                try{return connectPlain(publicHost,publicPort,"PUBLIC",4200);}
                 catch(IOException e){last=e;log("PUBLIC 경로 실패: "+shortErr(e));}
             }
         }else{
-            try{return connectPlain(publicHost,publicPort,"PUBLIC");}
-            catch(IOException e){last=e;log("PUBLIC 경로 실패: "+shortErr(e));}
-            try{return connectPlain(PC_LAN,DEFAULT_PC_PORT,"PC LAN fallback");}
+            // External/mobile condition: first reuse the already-proven PHONE RoonLink VPN path.
+            // This avoids depending on router-side TCP 51920 exposure and reproduces the logical path
+            // that the working PHONE RoonLink already uses.
+            try{return connectPlain(PHONE_VPN_PC,DEFAULT_PC_PORT,
+                    phoneVpnSeen?"PHONE VPN INTERNAL":"PHONE VPN INTERNAL (probe)",2200);}
+            catch(IOException e){last=e;log("PHONE VPN 내부경로 실패: "+shortErr(e));}
+
+            // Keep the old public path as a safety fallback.
+            try{return connectPlain(publicHost,publicPort,"PUBLIC FALLBACK",4200);}
+            catch(IOException e){last=e;log("PUBLIC fallback 실패: "+shortErr(e));}
+
+            try{return connectPlain(PC_LAN,DEFAULT_PC_PORT,"PC LAN fallback",1800);}
             catch(IOException e){last=e;log("LAN fallback 실패: "+shortErr(e));}
         }
         throw new IOException("PC Relay 경로 없음",last);
     }
 
-    private PcConnection connectPlain(String host,int port,String via)throws IOException{
+    private PcConnection connectPlain(String host,int port,String via,int timeoutMs)throws IOException{
         Socket s=new Socket();
         try{
             log("PC Relay 접속 시도 → "+host+":"+port+" ["+via+"]");
-            s.connect(new InetSocketAddress(host,port),4200);
+            s.connect(new InetSocketAddress(host,port),timeoutMs);
             s.setTcpNoDelay(true);s.setKeepAlive(true);
             String label=host+":"+port+" · "+via;
             log("PC Relay 접속 성공 → "+label+" · local="+s.getLocalSocketAddress());
