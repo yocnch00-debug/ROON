@@ -1,0 +1,126 @@
+name: Build ON ShareLink v1.6 PERFORMANCE
+
+on:
+  push:
+    branches: [ on-sharelink-v16-performance-golden-20260822 ]
+    paths:
+      - 'sharelink/**'
+      - '.github/workflows/build-on-sharelink-v16-performance.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  performance-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install SDK and NDK
+        run: |
+          set -euxo pipefail
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager 'platforms;android-35' 'build-tools;36.0.0' 'ndk;27.2.12479018'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.13'
+
+      - name: Build pinned HEV for ShareLink Client
+        run: |
+          set -euxo pipefail
+          base64 -d sharelink/onroonlink-test.jks.b64 > sharelink/onroonlink-test.jks
+          git clone --recursive https://github.com/heiher/hev-socks5-tunnel.git /tmp/hev
+          cd /tmp/hev
+          git checkout 0428c4ebb0df933ebac8e507832f252ef7da47f1
+          git submodule update --init --recursive
+          "$ANDROID_HOME/ndk/27.2.12479018/ndk-build" -j2 \
+            NDK_PROJECT_PATH="$PWD" APP_BUILD_SCRIPT="$PWD/Android.mk" \
+            NDK_APPLICATION_MK="$PWD/Application.mk" APP_ABI=arm64-v8a APP_PLATFORM=android-29
+          mkdir -p "$GITHUB_WORKSPACE/sharelink/client/src/main/jniLibs/arm64-v8a"
+          cp libs/arm64-v8a/libhev-socks5-tunnel.so "$GITHUB_WORKSPACE/sharelink/client/src/main/jniLibs/arm64-v8a/"
+
+      - name: Guard frozen coexistence routes and performance-only changes
+        run: |
+          set -euxo pipefail
+          H=sharelink/host/src/main/java/com/onsharelink/host/Socks5Server.java
+          HS=sharelink/host/src/main/java/com/onsharelink/host/ShareHostService.java
+          C=sharelink/client/src/main/java/com/onsharelink/client/ClientLinkService.java
+          V=sharelink/client/src/main/java/com/onsharelink/client/ShareVpnService.java
+          P=sharelink/client/src/main/java/com/onsharelink/client/PublicRoutes.java
+          grep -q "versionName '1.6-performance-no-bind'" sharelink/host/build.gradle
+          grep -q "versionName '1.6-performance-roon-coexist'" sharelink/client/build.gradle
+          grep -q 'COPY_BUFFER_SIZE=65536' "$H"
+          grep -q 'CLIENT_REFRESH_MS=1000L' "$HS"
+          grep -q 'HEALTHY_CHECK_MS=10000L' "$C"
+          grep -q 'HEALTH_TRANSIENT_FAIL' "$C"
+          grep -q 'log-level: warn' "$V"
+          grep -q '\.allowBypass()' "$V"
+          grep -q 'addDisallowedApplication("com.onroonlink.sidecar")' "$V"
+          grep -q 'OUTBOUND_DEFAULT_ROUTE_TCP_OK' "$H"
+          grep -q 'OUTBOUND_DEFAULT_ROUTE_UDP_OK' "$H"
+          if grep -q 'getSocketFactory().createSocket' "$H"; then echo 'ERROR: Host forced socket bind regressed'; exit 1; fi
+          if grep -q 'bindSocket' "$H"; then echo 'ERROR: Host UDP forced bind regressed'; exit 1; fi
+          if grep -q '0.0.0.0/0' "$P"; then echo 'ERROR: default VPN route swallows local Roon'; exit 1; fi
+          if grep -q '192.168.49' "$P"; then echo 'ERROR: local S26 subnet entered VPN'; exit 1; fi
+
+      - name: Build ShareLink Host and Client
+        working-directory: sharelink
+        run: gradle --no-daemon :host:assembleRelease :client:assembleRelease
+
+      - name: Verify APKs
+        run: |
+          set -euxo pipefail
+          H=sharelink/host/build/outputs/apk/release/host-release.apk
+          C=sharelink/client/build/outputs/apk/release/client-release.apk
+          test -f "$H"; test -f "$C"
+          for A in "$H" "$C"; do
+            "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose --print-certs "$A"
+            "$ANDROID_HOME/build-tools/36.0.0/zipalign" -c -P 16 -v 4 "$A" >/dev/null
+            unzip -t "$A" >/dev/null
+          done
+
+      - name: Package performance set
+        run: |
+          set -euxo pipefail
+          mkdir -p out
+          cp sharelink/host/build/outputs/apk/release/host-release.apk out/ON-ShareLink-S26-Host-v1.6-PERFORMANCE-NO-BIND.apk
+          cp sharelink/client/build/outputs/apk/release/client-release.apk out/ON-ShareLink-R8-Client-v1.6-PERFORMANCE-ROON-COEXIST.apk
+          sha256sum out/*.apk > out/SHA256SUMS.txt
+          cat > out/README.txt <<'TXT'
+          ON ShareLink v1.6 PERFORMANCE
+
+          Install/update only these two ShareLink apps:
+          S26: ON-ShareLink-S26-Host-v1.6-PERFORMANCE-NO-BIND.apk
+          R8 II: ON-ShareLink-R8-Client-v1.6-PERFORMANCE-ROON-COEXIST.apk
+
+          KEEP the already-working ON-Roon-R8-Sidecar-v2.6-SHARELINK-COEXIST installed and unchanged.
+          PC ON RoonLink and S26 existing ON RoonLink PHONE+R8 remain unchanged.
+
+          Performance-only changes:
+          - Host SOCKS copy buffer 32 KiB -> 64 KiB and no per-chunk flush.
+          - Host success route logs are emitted only once per server lifecycle.
+          - Host per-session UI/P2P refresh is coalesced to at most once per second.
+          - Client healthy SOCKS auth probe 3 s -> 10 s; failure retry/recovery remains fast.
+          - HEV log level info -> warn and VPN traffic notification refresh 5 s without periodic file-log writes.
+
+          Frozen coexistence behavior:
+          - S26 Internet outbound remains DEFAULT_ROUTE_NO_BIND.
+          - R8 public IPv4 split routes remain unchanged.
+          - allowBypass + com.onroonlink.sidecar exclusion remain enabled.
+          - R8 Sidecar v2.6 physical wlan0 Roon path is untouched.
+          TXT
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ON-ShareLink-v1.6-PERFORMANCE
+          path: out/
