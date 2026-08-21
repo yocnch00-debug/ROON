@@ -6,7 +6,11 @@ android {
     defaultConfig {
         applicationId 'com.onsharelink.client'
         minSdk 26
-        targetSdk 35
+        // R8 II is Android 12. target 28 intentionally keeps the legacy user-saved
+        // WifiConfiguration path available for this sideloaded personal client.
+        // If a newer device rejects it at runtime, MainActivity falls back to
+        // Settings.ACTION_WIFI_ADD_NETWORKS.
+        targetSdk 28
         versionCode 10
         versionName '1.0-rebuild'
     }
