@@ -1,0 +1,168 @@
+name: Build ON ShareLink v1.5 + R8 Sidecar v2.6 FINAL
+
+on:
+  push:
+    branches: [ on-sharelink-v15-roon-coexist-20260822 ]
+    paths:
+      - 'sharelink/**'
+      - '.github/workflows/build-on-sharelink-v15-final.yml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'sharelink/**'
+      - '.github/workflows/build-on-sharelink-v15-final.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  coexist-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - name: Install SDK and NDK
+        run: |
+          set -euxo pipefail
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager 'platforms;android-35' 'platforms;android-36' 'build-tools;36.0.0' 'ndk;27.2.12479018'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.13'
+
+      - name: Prepare signing and HEV
+        run: |
+          set -euxo pipefail
+          base64 -d sharelink/onroonlink-test.jks.b64 > sharelink/onroonlink-test.jks
+          git clone --recursive https://github.com/heiher/hev-socks5-tunnel.git /tmp/hev
+          cd /tmp/hev
+          git checkout 0428c4ebb0df933ebac8e507832f252ef7da47f1
+          git submodule update --init --recursive
+          "$ANDROID_HOME/ndk/27.2.12479018/ndk-build" -j2 \
+            NDK_PROJECT_PATH="$PWD" APP_BUILD_SCRIPT="$PWD/Android.mk" \
+            NDK_APPLICATION_MK="$PWD/Application.mk" APP_ABI=arm64-v8a APP_PLATFORM=android-29
+          mkdir -p "$GITHUB_WORKSPACE/sharelink/client/src/main/jniLibs/arm64-v8a"
+          cp libs/arm64-v8a/libhev-socks5-tunnel.so "$GITHUB_WORKSPACE/sharelink/client/src/main/jniLibs/arm64-v8a/"
+
+      - name: Extract R8 Sidecar v2.6 source
+        run: |
+          set -euxo pipefail
+          unzip -t sharelink/r8v26-sharelink-source.zip
+          rm -rf work-r8 && mkdir work-r8
+          unzip -q sharelink/r8v26-sharelink-source.zip -d work-r8
+          ROOT=work-r8/r8v26_sharelink
+          test -f "$ROOT/app/src/main/java/com/onroonlink/sidecar/BridgeService.java"
+          cp sharelink/onroonlink-test.jks "$ROOT/onroonlink-test.jks"
+
+      - name: Verify frozen RoonLink data paths are byte-identical to v2.5
+        run: |
+          set -euxo pipefail
+          ROOT=work-r8/r8v26_sharelink
+          printf '%s  %s\n' 6f2afc68dbd660317c44f6cfe082bb254f2ea5f5e08dd59f107d11ebfe4c1800 "$ROOT/app/src/main/java/com/onroonlink/sidecar/TunnelMux.java" | sha256sum -c -
+          printf '%s  %s\n' 36e17341da1605d613c71a330435c64bb9f244f8abe435f2c35c6156ef73816e "$ROOT/app/src/main/java/com/onroonlink/sidecar/SoodCodec.java" | sha256sum -c -
+          printf '%s  %s\n' d738c7035f3f09e2350fdd4fcd413c4684a52acdde604b1be5793ad253edd8b7 "$ROOT/app/src/main/java/com/onroonlink/sidecar/LocalSoodInjector.java" | sha256sum -c -
+          printf '%s  %s\n' a996c9941a4e8ea81fd7b4a3e9261fee4d806dfd931cb5bf734ca94e2284ff92 "$ROOT/app/src/main/AndroidManifest.xml" | sha256sum -c -
+          printf '%s  %s\n' 255c3c9777837d205fe813dd7c5754d0ea2ded9421ab97f47bea4afb87042bbf "$ROOT/app/src/main/res/values/styles.xml" | sha256sum -c -
+
+      - name: Verify Sidecar v2.6 physical WLAN fix
+        run: |
+          set -euxo pipefail
+          ROOT=work-r8/r8v26_sharelink
+          F="$ROOT/app/src/main/java/com/onroonlink/sidecar/BridgeService.java"
+          grep -q 'versionCode = 16' "$ROOT/app/build.gradle.kts"
+          grep -q 'versionName = "2.6-sharelink-coexist"' "$ROOT/app/build.gradle.kts"
+          grep -q '2.6-SHARELINK-COEXIST' "$F"
+          grep -q 'hasTransport(NetworkCapabilities.TRANSPORT_VPN)' "$F"
+          grep -q 'NET_CAPABILITY_NOT_VPN' "$F"
+          grep -q 'ROUTE_SKIP_VIRTUAL' "$F"
+          grep -q 'ROUTE_PHYSICAL_SELECTED' "$F"
+          grep -q 'isVirtualInterface' "$F"
+          grep -q 'isS26ClientAddress' "$F"
+          grep -q 'startsWith("wlan")' "$F"
+          grep -q '192' "$F"
+          grep -q 'connectOnWifiNetwork(route,GATEWAY_HOST,GATEWAY_PORT,5000)' "$F"
+          grep -q 'route.network.getSocketFactory().createSocket()' "$F"
+          grep -q 'SOOD_CACHE_UPDATE' "$F"
+          grep -q 'SOOD_CACHE_FALLBACK' "$F"
+          grep -q 'SOOD_CACHE_INVALIDATED' "$F"
+          grep -q 'ROUTE_CONFIRM_MS=1800L' "$F"
+          grep -q 'ROUTE_TRANSIENT_IGNORED' "$F"
+          grep -q 'WLAN-SELF' "$F"
+          grep -q 'AUX_UDP_TO_R8=40' "$ROOT/app/src/main/java/com/onroonlink/sidecar/TunnelMux.java"
+          grep -q 'AUX_UDP_FROM_R8=41' "$ROOT/app/src/main/java/com/onroonlink/sidecar/TunnelMux.java"
+          if grep -q 'connectWithoutNetworkBind' "$F"; then echo 'ERROR: unbound gateway path returned'; exit 1; fi
+          if grep -q 'android.net.VpnService' "$ROOT/app/src/main/AndroidManifest.xml"; then echo 'ERROR: Sidecar became a VPN'; exit 1; fi
+
+      - name: Verify ShareLink Internet path and coexist controls
+        run: |
+          set -euxo pipefail
+          H=sharelink/host/src/main/java/com/onsharelink/host/Socks5Server.java
+          V=sharelink/client/src/main/java/com/onsharelink/client/ShareVpnService.java
+          P=sharelink/client/src/main/java/com/onsharelink/client/PublicRoutes.java
+          grep -q 'OUTBOUND_DEFAULT_ROUTE_TCP_OK' "$H"
+          grep -q 'OUTBOUND_DEFAULT_ROUTE_UDP_OK' "$H"
+          ! grep -q 'getSocketFactory().createSocket' "$H"
+          ! grep -q 'bindSocket' "$H"
+          grep -q "versionName '1.4-no-bind'" sharelink/host/build.gradle
+          grep -q '\.allowBypass()' "$V"
+          grep -q 'VPN_ALLOW_BYPASS physical-network binding enabled' "$V"
+          grep -q 'addDisallowedApplication("com.onroonlink.sidecar")' "$V"
+          grep -q "versionName '1.5-roon-coexist'" sharelink/client/build.gradle
+          grep -q 'SOCKS_AUTH_OK' sharelink/client/src/main/java/com/onsharelink/client/ClientLinkService.java
+          grep -q 'HEALTH_TRANSIENT_FAIL' sharelink/client/src/main/java/com/onsharelink/client/ClientLinkService.java
+          grep -q 'addNetwork(cfg)' sharelink/client/src/main/java/com/onsharelink/client/WifiBootstrap.java
+          if grep -q '0.0.0.0/0' "$P"; then echo 'ERROR: default VPN route swallows local Roon'; exit 1; fi
+          if grep -q '192.168.49' "$P"; then echo 'ERROR: S26 local subnet entered VPN'; exit 1; fi
+          ! grep -R -i -n 'kha\.prog\.mikrotik\|Proxy-agent: NetShare' sharelink --exclude='r8v26-sharelink-source.zip'
+
+      - name: Build S26 Host and R8 ShareLink Client
+        working-directory: sharelink
+        run: gradle --no-daemon :host:assembleRelease :client:assembleRelease
+
+      - name: Build R8 Roon Sidecar v2.6
+        working-directory: work-r8/r8v26_sharelink
+        run: gradle --no-daemon :app:assembleRelease
+
+      - name: Verify APK signatures, alignment and archives
+        run: |
+          set -euxo pipefail
+          H=sharelink/host/build/outputs/apk/release/host-release.apk
+          C=sharelink/client/build/outputs/apk/release/client-release.apk
+          R=work-r8/r8v26_sharelink/app/build/outputs/apk/release/app-release.apk
+          test -f "$H"; test -f "$C"; test -f "$R"
+          for A in "$H" "$C" "$R"; do
+            "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose --print-certs "$A"
+            "$ANDROID_HOME/build-tools/36.0.0/zipalign" -c -P 16 -v 4 "$A" >/dev/null
+            unzip -t "$A" >/dev/null
+          done
+
+      - name: Package simultaneous-coexist test set
+        run: |
+          set -euxo pipefail
+          mkdir -p out
+          cp sharelink/host/build/outputs/apk/release/host-release.apk out/ON-ShareLink-S26-Host-v1.4-NO-BIND.apk
+          cp sharelink/client/build/outputs/apk/release/client-release.apk out/ON-ShareLink-R8-Client-v1.5-ROON-COEXIST.apk
+          cp work-r8/r8v26_sharelink/app/build/outputs/apk/release/app-release.apk out/ON-Roon-R8-Sidecar-v2.6-SHARELINK-COEXIST.apk
+          cp sharelink/THIRD_PARTY_NOTICES.md out/THIRD_PARTY_NOTICES.md
+          cp work-r8/r8v26_sharelink/SHARELINK-COEXIST-NOTES.txt out/R8-SIDECAR-COEXIST-NOTES.txt
+          sha256sum out/*.apk > out/SHA256SUMS.txt
+          cat > out/README.txt <<'TXT'
+          ON ShareLink + ON RoonLink simultaneous coexist test set
+
+          S26 Host v1.4 remains the device-proven NO-BIND Internet relay.
+          R8 ShareLink Client v1.5 keeps public Internet in the VPN and allows explicit physical-Network binding.
+          R8 Roon Sidecar v2.6 is based on exact v2.5 and refuses VPN/tun Networks even when Android reports inherited WIFI transport; only non-VPN wlan + 192.168.49.x can be used for S26 Gateway :51921.
+
+          Existing TunnelMux / dynamic RAAT AUX TCP+UDP / SOOD codec+injector / Sidecar manifest are SHA-locked to v2.5.
+          PC RoonLink, S26 RoonLink and USB/Tamra audio code are not modified.
+          TXT
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ON-ShareLink-v1.5-Roon-Coexist-R8-v2.6-FINAL
+          path: out/
