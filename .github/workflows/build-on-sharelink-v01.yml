@@ -1,3 +1,4 @@
+# v1.4 device-log fix: S26 RoonLink coexistence requires no forced CELLULAR socket bind
 name: Build ON ShareLink v1.4 HOST NO-BIND
 
 on:
