@@ -1,0 +1,25 @@
+name: Fetch Apktool
+
+on:
+  pull_request:
+    branches: [ main ]
+    paths:
+      - '.github/workflows/fetch-apktool.yml'
+  workflow_dispatch:
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download apktool
+        run: |
+          set -euxo pipefail
+          curl -L --fail --retry 3 -o apktool.jar https://github.com/iBotPeaches/Apktool/releases/download/v2.11.1/apktool_2.11.1.jar
+          java -jar apktool.jar --version
+          sha256sum apktool.jar > SHA256.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: apktool-2.11.1
+          path: |
+            apktool.jar
+            SHA256.txt
