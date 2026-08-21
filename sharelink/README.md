@@ -6,7 +6,7 @@
 2026-08-22 R8 실기 로그에서 v0.x의 두 문제가 분리되어 확인됐다.
 
 1. `DIRECT-ON-ShareLink` SSID는 실제 스캔되지만 v0.3의 `WifiNetworkSuggestion`만으로는 R8이 실제 저장 Wi-Fi처럼 안정적으로 자동 접속하지 않았다.
-2. 사용자가 수동으로 Wi-Fi를 연결해 `wlan0=192.168.49.x`가 된 뒤에도 S26 `192.168.49.1:51950` SOCKS probe가 EOF로 끝났다. Host가 SOCKS target을 읽기 전에 `CELLULAR Network`를 무조건 요구하던 race 때문에 모바일 Network가 잠깐 null이면 인증 직후 소켓을 그냥 닫을 수 있었다.
+2. 사용자가 수동으로 Wi-Fi를 연결해 `wlan0=192.168.49.x`가 된 뒤에도 S26 `192.168.49.1:51950` SOCKS probe가 EOF/ECONNREFUSED로 끝났다. Host가 SOCKS target을 읽기 전에 `CELLULAR Network`를 무조건 요구하던 race와 listener lifecycle을 함께 수정해야 했다.
 
 따라서 v1.0은 v0.x에 덧칠하지 않고 Wi-Fi provisioning, Host lifecycle/UI, SOCKS relay를 다시 정리한다.
 
@@ -20,11 +20,15 @@
 - Internet outbound는 `TRANSPORT_CELLULAR` Network에 강제로 바인딩해 S26 LTE/5G로 보냄.
 - TCP CONNECT + UDP ASSOCIATE 지원.
 - CELLULAR Network가 순간적으로 unavailable이어도 SOCKS 인증 소켓을 EOF로 끊지 않고 정상 SOCKS failure reply를 반환하여 Client가 상태를 구분하고 재시도할 수 있게 함.
+- TCP 51950 listener는 wildcard로 유지해 Wi-Fi Direct 주소 전환에 덜 민감하게 했고, 3초 watchdog이 listener/group 상태를 감시해 필요 시 재기동.
+- S26에서 `S26 Host 진단 로그 복사` 가능.
 
 ## Client (R8 II / Android)
-- Android 11+ 최초 1회 `ACTION_WIFI_ADD_NETWORKS`를 사용해 `DIRECT-ON-ShareLink`를 시스템의 실제 저장 Wi-Fi로 등록.
-- v0.3의 `WifiNetworkSuggestion` 상태를 v1 최초 실행에서 제거해 duplicate suggestion/saved-network 충돌을 피함.
-- 저장 이후 Android Wi-Fi subsystem의 auto-join을 사용. 앱이 가짜 연결 상태를 만들지 않음.
+- R8 II Android 12에서 NetShare처럼 실제 저장 Wi-Fi에 가까운 동작을 위해 sideload Client의 `targetSdk`를 28로 설정.
+- 최초 등록 시 먼저 `WifiConfiguration → addNetwork/updateNetwork → saveConfiguration → enableNetwork → reconnect`를 직접 시도한다.
+- 이 legacy saved-network 경로를 기기 정책이 막을 경우에만 Android 11+ `ACTION_WIFI_ADD_NETWORKS` 저장 화면으로 fallback한다.
+- v0.3의 `WifiNetworkSuggestion` 상태는 v1 최초 실행에서 제거해 duplicate suggestion/saved-network 충돌을 피한다.
+- 연결이 끊겨 있으면 저장된 `DIRECT-ON-ShareLink`에 주기적으로 `enableNetwork + reconnect`를 재시도한다.
 - 실제 `wlan0`에 `192.168.49.x` 주소가 생겨야 2단계로 넘어감.
 - `192.168.49.1:51950`에서 SOCKS5 인증 성공 + S26가 cellular로 `1.1.1.1:443` CONNECT 성공을 반환해야 VPN을 시작.
 - 단계 표시: 1/4 Wi-Fi → 2/4 Host → 3/4 Cellular → 4/4 VPN.
