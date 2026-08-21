@@ -1,0 +1,2 @@
+Final coexist build trigger 2026-08-22
+R8 Sidecar v2.6 physical WLAN only + ShareLink Client v1.5 bypass
