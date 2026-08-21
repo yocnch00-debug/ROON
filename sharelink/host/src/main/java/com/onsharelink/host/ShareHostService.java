@@ -8,6 +8,7 @@ import android.net.wifi.p2p.nsd.WifiP2pDnsSdServiceInfo;
 import android.os.*;
 import java.net.*;
 import java.util.*;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 public class ShareHostService extends Service {
@@ -17,8 +18,10 @@ public class ShareHostService extends Service {
     public static final String ACTION_STATUS="com.onsharelink.host.STATUS";
     public static final int SOCKS_PORT=51950;
     public static final String GROUP_NAME="DIRECT-ON-ShareLink";
+    private static final long CLIENT_REFRESH_MS=1000L;
 
     private final AtomicReference<Network> cellular=new AtomicReference<>();
+    private final AtomicBoolean clientRefreshQueued=new AtomicBoolean();
     private final Handler main=new Handler(Looper.getMainLooper());
     private ConnectivityManager cm;
     private WifiP2pManager p2p;
@@ -27,6 +30,10 @@ public class ShareHostService extends Service {
     private ConnectivityManager.NetworkCallback cellularCallback;
     private Socks5Server socks;
     private volatile boolean explicitStop;
+
+    private final Runnable clientRefreshTask=new Runnable(){
+        @Override public void run(){clientRefreshQueued.set(false);if(isEnabled())refreshGroupInfo();}
+    };
 
     private final Runnable watchdog=new Runnable(){
         @Override public void run(){
@@ -55,7 +62,7 @@ public class ShareHostService extends Service {
     };
 
     @Override public void onCreate(){
-        super.onCreate();HostDiag.log(this,"SERVICE_CREATE sdk="+Build.VERSION.SDK_INT);
+        super.onCreate();HostDiag.log(this,"SERVICE_CREATE sdk="+Build.VERSION.SDK_INT+" clientRefresh="+CLIENT_REFRESH_MS+"ms");
         cm=(ConnectivityManager)getSystemService(CONNECTIVITY_SERVICE);p2p=(WifiP2pManager)getSystemService(WIFI_P2P_SERVICE);
         channel=p2p.initialize(this,getMainLooper(),()->{HostDiag.log(this,"P2P_CHANNEL_DISCONNECTED");publish("Wi-Fi Direct 채널 재초기화 중",0,"");main.postDelayed(this::reinitChannel,800);});
         foreground("준비중");requestCellular();registerP2pReceiver();
@@ -73,6 +80,7 @@ public class ShareHostService extends Service {
 
     private void reinitChannel(){try{channel=p2p.initialize(this,getMainLooper(),()->main.postDelayed(this::reinitChannel,1000));}catch(Exception ignored){}if(isEnabled())ensureGroup();}
     private boolean isEnabled(){return getSharedPreferences("sharelink",0).getBoolean("enabled",false);}
+    private void scheduleClientRefresh(){if(clientRefreshQueued.compareAndSet(false,true))main.postDelayed(clientRefreshTask,CLIENT_REFRESH_MS);}
 
     private void foreground(String text){
         NotificationManager nm=(NotificationManager)getSystemService(NOTIFICATION_SERVICE);if(Build.VERSION.SDK_INT>=26)nm.createNotificationChannel(new NotificationChannel("sharelink_host","ON ShareLink Host",NotificationManager.IMPORTANCE_LOW));
@@ -139,7 +147,7 @@ public class ShareHostService extends Service {
 
     private void publishDiscovery(){
         try{
-            Map<String,String> txt=new HashMap<>();txt.put("port",String.valueOf(SOCKS_PORT));txt.put("version","1.1");txt.put("mode","cellular");WifiP2pDnsSdServiceInfo si=WifiP2pDnsSdServiceInfo.newInstance("ONShareLink","_onsharelink._tcp",txt);
+            Map<String,String> txt=new HashMap<>();txt.put("port",String.valueOf(SOCKS_PORT));txt.put("version","1.6");txt.put("mode","cellular");WifiP2pDnsSdServiceInfo si=WifiP2pDnsSdServiceInfo.newInstance("ONShareLink","_onsharelink._tcp",txt);
             p2p.clearLocalServices(channel,new WifiP2pManager.ActionListener(){@Override public void onSuccess(){p2p.addLocalService(channel,si,new WifiP2pManager.ActionListener(){public void onSuccess(){}public void onFailure(int r){}});}@Override public void onFailure(int r){}});
         }catch(Exception ignored){}
     }
@@ -164,15 +172,16 @@ public class ShareHostService extends Service {
     private synchronized void startSocks(InetAddress groupAddress){
         String code=Pairing.code(this);if(socks!=null&&socks.isRunning()&&groupAddress.equals(socks.getBindAddress())&&code.equals(socks.getPairingCode()))return;closeSocks();
         socks=new Socks5Server(groupAddress,SOCKS_PORT,cellular::get,msg->{
+            if(msg==null)return;
+            if(msg.startsWith("CLIENT_EVENT")){scheduleClientRefresh();return;}
             HostDiag.log(ShareHostService.this,msg);
-            if(msg!=null&&msg.startsWith("CLIENT_EVENT"))refreshGroupInfo();
-            else if(msg!=null&&msg.startsWith("SOCKS_ERROR"))publish(msg,getSharedPreferences("sharelink",0).getInt("client_count",0),getSharedPreferences("sharelink",0).getString("client_list",""));
+            if(msg.startsWith("SOCKS_ERROR"))publish(msg,getSharedPreferences("sharelink",0).getInt("client_count",0),getSharedPreferences("sharelink",0).getString("client_list",""));
         },code);
         try{socks.start();HostDiag.log(this,"SOCKS_START_OK port="+SOCKS_PORT+" p2p="+groupAddress.getHostAddress());refreshGroupInfo();}
         catch(Exception e){HostDiag.log(this,"SOCKS_START_FAIL "+e);publish("SOCKS 서버 시작 실패: "+e.getClass().getSimpleName()+" "+String.valueOf(e.getMessage()),0,"");}
     }
 
-    private synchronized void closeSocks(){if(socks!=null){HostDiag.log(this,"SOCKS_CLOSE");try{socks.close();}catch(Exception ignored){}socks=null;}}
+    private synchronized void closeSocks(){main.removeCallbacks(clientRefreshTask);clientRefreshQueued.set(false);if(socks!=null){HostDiag.log(this,"SOCKS_CLOSE");try{socks.close();}catch(Exception ignored){}socks=null;}}
 
     private void stopSharing(){
         closeSocks();getSharedPreferences("sharelink",0).edit().putString("traffic_list","").apply();try{p2p.clearLocalServices(channel,null);}catch(Exception ignored){}
@@ -181,7 +190,7 @@ public class ShareHostService extends Service {
     }
 
     @Override public void onDestroy(){
-        HostDiag.log(this,"SERVICE_DESTROY");main.removeCallbacks(watchdog);closeSocks();try{if(p2pReceiver!=null)unregisterReceiver(p2pReceiver);}catch(Exception ignored){}try{if(cellularCallback!=null)cm.unregisterNetworkCallback(cellularCallback);}catch(Exception ignored){}super.onDestroy();
+        HostDiag.log(this,"SERVICE_DESTROY");main.removeCallbacks(watchdog);main.removeCallbacks(clientRefreshTask);clientRefreshQueued.set(false);closeSocks();try{if(p2pReceiver!=null)unregisterReceiver(p2pReceiver);}catch(Exception ignored){}try{if(cellularCallback!=null)cm.unregisterNetworkCallback(cellularCallback);}catch(Exception ignored){}super.onDestroy();
     }
     @Override public IBinder onBind(Intent i){return null;}
 }
