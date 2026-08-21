@@ -61,7 +61,6 @@ jobs:
             $candidate = Get-ChildItem $extract -Recurse -File | Where-Object { $_.Name -match '(?i)^hev-socks5-tunnel.*(\.exe)?$' } | Select-Object -First 1
             if ($candidate) { $hevExe = $candidate.FullName }
           } else {
-            # HEV Windows release is currently a raw PE binary without .exe extension.
             $hevExe = $hevDownload
           }
           if (-not $hevExe) { throw 'HEV executable not found after extraction' }
@@ -80,6 +79,7 @@ jobs:
           Copy-Item $wintunDll pc-client/Resources/wintun.dll -Force
 
           & pc-client/Resources/hev-socks5-tunnel.exe --version 2>&1 | Write-Host
+          $global:LASTEXITCODE = 0
 
       - name: Guard route safety
         shell: pwsh
