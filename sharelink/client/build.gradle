@@ -7,8 +7,8 @@ android {
         applicationId 'com.onsharelink.client'
         minSdk 26
         targetSdk 35
-        versionCode 3
-        versionName '0.3-one-tap'
+        versionCode 4
+        versionName '0.4-wifi-save'
     }
     signingConfigs {
         onTest {
