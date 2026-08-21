@@ -26,5 +26,12 @@ android {
         debug { signingConfig signingConfigs.onTest }
         release { minifyEnabled false; signingConfig signingConfigs.onTest }
     }
+    // This APK is a private sideload build for the Android 12 R8 II, not a
+    // Google Play submission. targetSdk 28 is deliberate so the legacy
+    // user-saved WifiConfiguration APIs remain callable; all other release
+    // lint checks stay enabled.
+    lint {
+        disable 'ExpiredTargetSdkVersion'
+    }
     sourceSets { main { jniLibs.srcDirs = ['src/main/jniLibs'] } }
 }
