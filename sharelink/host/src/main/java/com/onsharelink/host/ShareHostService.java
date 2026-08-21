@@ -139,7 +139,7 @@ public class ShareHostService extends Service {
 
     private void publishDiscovery(){
         try{
-            Map<String,String> txt=new HashMap<>();txt.put("port",String.valueOf(SOCKS_PORT));txt.put("version","1.0");txt.put("mode","cellular");WifiP2pDnsSdServiceInfo si=WifiP2pDnsSdServiceInfo.newInstance("ONShareLink","_onsharelink._tcp",txt);
+            Map<String,String> txt=new HashMap<>();txt.put("port",String.valueOf(SOCKS_PORT));txt.put("version","1.1");txt.put("mode","cellular");WifiP2pDnsSdServiceInfo si=WifiP2pDnsSdServiceInfo.newInstance("ONShareLink","_onsharelink._tcp",txt);
             p2p.clearLocalServices(channel,new WifiP2pManager.ActionListener(){@Override public void onSuccess(){p2p.addLocalService(channel,si,new WifiP2pManager.ActionListener(){public void onSuccess(){}public void onFailure(int r){}});}@Override public void onFailure(int r){}});
         }catch(Exception ignored){}
     }
@@ -156,7 +156,8 @@ public class ShareHostService extends Service {
         if(g==null||!g.isGroupOwner()){publish("공유망 ON · Wi-Fi Direct 준비중",0,"");return;}
         Collection<WifiP2pDevice> ds=g.getClientList();int n=ds==null?0:ds.size();StringBuilder list=new StringBuilder();
         if(ds!=null){int idx=1;for(WifiP2pDevice d:ds){String name=d.deviceName==null||d.deviceName.trim().isEmpty()?"Android 기기":d.deviceName.trim();if(list.length()>0)list.append('\n');list.append(idx++).append(". ").append(name);if(d.deviceAddress!=null&&!d.deviceAddress.isEmpty())list.append("  [").append(d.deviceAddress).append(']');}}
-        getSharedPreferences("sharelink",0).edit().putString("wifi_ssid",GROUP_NAME).putString("wifi_password",Pairing.code(this)).putInt("client_count",n).putString("client_list",list.toString()).apply();
+        String traffic=socks==null?"":socks.trafficSummary();
+        getSharedPreferences("sharelink",0).edit().putString("wifi_ssid",GROUP_NAME).putString("wifi_password",Pairing.code(this)).putInt("client_count",n).putString("client_list",list.toString()).putString("traffic_list",traffic).apply();
         String cell=cellular.get()!=null?"LTE/5G 준비됨":"LTE/5G 대기";String srv=socks!=null&&socks.isRunning()?"서버 준비됨":"서버 준비중";publish("공유망 ON · "+n+"대 접속 · "+cell+" · "+srv,n,list.toString());
     }
 
@@ -174,7 +175,7 @@ public class ShareHostService extends Service {
     private synchronized void closeSocks(){if(socks!=null){HostDiag.log(this,"SOCKS_CLOSE");try{socks.close();}catch(Exception ignored){}socks=null;}}
 
     private void stopSharing(){
-        closeSocks();try{p2p.clearLocalServices(channel,null);}catch(Exception ignored){}
+        closeSocks();getSharedPreferences("sharelink",0).edit().putString("traffic_list","").apply();try{p2p.clearLocalServices(channel,null);}catch(Exception ignored){}
         removeGroupThen(()->{publish("공유망 OFF",0,"");stopForeground(true);stopSelf();});
         main.postDelayed(()->{if(explicitStop){publish("공유망 OFF",0,"");stopForeground(true);stopSelf();}},1200);
     }
