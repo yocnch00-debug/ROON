@@ -27,8 +27,8 @@ public class MainActivity extends Activity {
     @Override public void onCreate(Bundle b){
         super.onCreate(b);
         ScrollView sv=new ScrollView(this);LinearLayout root=new LinearLayout(this);root.setOrientation(LinearLayout.VERTICAL);root.setPadding(36,44,36,44);sv.addView(root);
-        TextView title=new TextView(this);title.setText("ON ShareLink Host v1.1 STABLE");title.setTextSize(27);root.addView(title);
-        TextView desc=new TextView(this);desc.setText("S26 모바일 데이터를 R8 II / Android에 직접 공유합니다.\n외부 서버 없이 S26 자체 Wi-Fi Direct + 인터넷 relay만 사용합니다.");desc.setTextSize(16);desc.setPadding(0,14,0,20);root.addView(desc);
+        TextView title=new TextView(this);title.setText("ON ShareLink Host v1.4 NO-BIND");title.setTextSize(27);root.addView(title);
+        TextView desc=new TextView(this);desc.setText("S26 모바일 데이터를 R8 II / Android에 직접 공유합니다.\n기존 RoonLink VPN과 공존하도록 인터넷 outbound는 Android 기본 경로(LTE/5G)를 사용합니다.");desc.setTextSize(16);desc.setPadding(0,14,0,20);root.addView(desc);
 
         shareSwitch=new Switch(this);shareSwitch.setText("공유망 Wi-Fi ON / OFF");shareSwitch.setTextSize(19);root.addView(shareSwitch);
         TextView ssid=new TextView(this);ssid.setText("공유망 이름\n"+ShareHostService.GROUP_NAME);ssid.setTextSize(17);ssid.setPadding(0,20,0,12);root.addView(ssid);
