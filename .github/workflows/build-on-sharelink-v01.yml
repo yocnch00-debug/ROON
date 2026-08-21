@@ -60,8 +60,10 @@ jobs:
           grep -q 'bindSocket(outbound)' sharelink/host/src/main/java/com/onsharelink/host/Socks5Server.java
           grep -q 'pairingCode.equals' sharelink/host/src/main/java/com/onsharelink/host/Socks5Server.java
           grep -q 'username: '\''onshare'\''' sharelink/client/src/main/java/com/onsharelink/client/ShareVpnService.java
-          grep -q '192.168.0.0/16' sharelink/README.md
+          grep -q '192.168/16' sharelink/README.md
           if grep -q '0.0.0.0/0' sharelink/client/src/main/java/com/onsharelink/client/PublicRoutes.java; then echo 'Default route would swallow local Roon paths'; exit 1; fi
+          if grep -q '192\.168\.' sharelink/client/src/main/java/com/onsharelink/client/PublicRoutes.java; then echo 'Private 192.168/16 must remain outside ShareLink VPN'; exit 1; fi
+          if grep -q '172\.16\.0\.0' sharelink/client/src/main/java/com/onsharelink/client/PublicRoutes.java; then echo 'Private 172.16/12 must remain outside ShareLink VPN'; exit 1; fi
           grep -q '208.0.0.0/4' sharelink/client/src/main/java/com/onsharelink/client/PublicRoutes.java
           grep -q 'udp: '\''udp'\''' sharelink/client/src/main/java/com/onsharelink/client/ShareVpnService.java
       - name: Build signed Host and Client APKs
