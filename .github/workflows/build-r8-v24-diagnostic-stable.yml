@@ -6,6 +6,11 @@ on:
     paths:
       - 'tools/r8v24-source.b64.part*'
       - '.github/workflows/build-r8-v24-diagnostic-stable.yml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'tools/r8v24-source.b64.part*'
+      - '.github/workflows/build-r8-v24-diagnostic-stable.yml'
   workflow_dispatch:
 
 permissions:
