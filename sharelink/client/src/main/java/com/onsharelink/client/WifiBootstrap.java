@@ -3,10 +3,14 @@ package com.onsharelink.client;
 import android.content.Context;
 import android.net.wifi.WifiConfiguration;
 import android.net.wifi.WifiManager;
+import android.os.SystemClock;
 import java.util.List;
 
 final class WifiBootstrap {
     static final int OK=1, NOT_ALLOWED=0, ERROR=-1;
+    static final String PREF_LAST_KICK="wifi_last_kick_elapsed";
+
+    private static void markKick(Context c){c.getSharedPreferences("sharelink",0).edit().putLong(PREF_LAST_KICK,SystemClock.elapsedRealtime()).apply();}
 
     @SuppressWarnings("deprecation")
     static int saveAndConnect(Context c,String ssid,String password){
@@ -35,6 +39,7 @@ final class WifiBootstrap {
             }
             if(netId<0){Diag.log(c,"WIFI_LEGACY_NOT_ALLOWED add/update returned -1");return NOT_ALLOWED;}
             boolean saved=wm.saveConfiguration();
+            markKick(c);
             boolean enabled=wm.enableNetwork(netId,true);
             boolean reconnect=wm.reconnect();
             Diag.log(c,"WIFI_LEGACY_CONNECT netId="+netId+" save="+saved+" enable="+enabled+" reconnect="+reconnect);
@@ -50,6 +55,7 @@ final class WifiBootstrap {
             if(wm==null)return false;
             int id=findNetworkId(wm,ssid);
             if(id<0)return false;
+            markKick(c);
             boolean en=wm.enableNetwork(id,true);
             boolean rc=wm.reconnect();
             Diag.log(c,"WIFI_RECONNECT_SAVED netId="+id+" enable="+en+" reconnect="+rc);
