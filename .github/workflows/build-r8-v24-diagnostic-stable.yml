@@ -43,6 +43,58 @@ jobs:
           mkdir work-r8
           unzip -q /tmp/r8-v24-source.zip -d work-r8
           base64 -d android-sidecar/onroonlink-test.jks.b64 > work-r8/r8-v24/onroonlink-test.jks
+      - name: Apply compile-safe session socket ownership fix
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('work-r8/r8-v24/app/src/main/java/com/onroonlink/sidecar/BridgeService.java')
+          s=p.read_text(encoding='utf-8')
+          old='''        s.setTcpNoDelay(true);s.setKeepAlive(true);s.setSoTimeout(0);
+                  status("PROXY","OK","S26 Gateway 연결 → "+GATEWAY_HOST+":"+GATEWAY_PORT);
+
+                  TunnelMux tm=new TunnelMux(s);
+                  long epoch;
+                  synchronized(tunnelLock){
+                      epoch=tunnelEpoch.incrementAndGet();
+                      tunnelSocket=s;
+                      mux=tm;
+                  }
+                  diag("SESSION_CONNECTED",session,epoch,"afterMs="+(SystemClock.elapsedRealtime()-started)+" local="+s.getLocalSocketAddress()+" remote="+s.getRemoteSocketAddress()+" route="+routeLabel(route));
+                  AtomicLong lastInboundAt=new AtomicLong(SystemClock.uptimeMillis());
+                  AtomicBoolean pongSeen=new AtomicBoolean(false);
+                  AtomicBoolean routeValidationPending=new AtomicBoolean(false);
+                  tm.sendText(TunnelMux.HELLO,0,"R8II|ON-SIDECAR|2.4-DIAGNOSTIC-STABLE");
+                  ConnectivityManager.NetworkCallback watcher=watchWifiRoute(session,epoch,tm,s,route,routeValidationPending);
+                  try{
+                      workers.execute(()->heartbeatLoop(session,epoch,tm,s,route,routeValidationPending));
+                      workers.execute(()->silentRecoveryLoop(session,epoch,tm,s,lastInboundAt,pongSeen));
+          '''
+          new='''        s.setTcpNoDelay(true);s.setKeepAlive(true);s.setSoTimeout(0);
+                  final Socket sessionSocket=s;
+                  status("PROXY","OK","S26 Gateway 연결 → "+GATEWAY_HOST+":"+GATEWAY_PORT);
+
+                  TunnelMux tm=new TunnelMux(sessionSocket);
+                  long epoch;
+                  synchronized(tunnelLock){
+                      epoch=tunnelEpoch.incrementAndGet();
+                      tunnelSocket=sessionSocket;
+                      mux=tm;
+                  }
+                  diag("SESSION_CONNECTED",session,epoch,"afterMs="+(SystemClock.elapsedRealtime()-started)+" local="+sessionSocket.getLocalSocketAddress()+" remote="+sessionSocket.getRemoteSocketAddress()+" route="+routeLabel(route));
+                  AtomicLong lastInboundAt=new AtomicLong(SystemClock.uptimeMillis());
+                  AtomicBoolean pongSeen=new AtomicBoolean(false);
+                  AtomicBoolean routeValidationPending=new AtomicBoolean(false);
+                  tm.sendText(TunnelMux.HELLO,0,"R8II|ON-SIDECAR|2.4-DIAGNOSTIC-STABLE");
+                  ConnectivityManager.NetworkCallback watcher=watchWifiRoute(session,epoch,tm,sessionSocket,route,routeValidationPending);
+                  try{
+                      workers.execute(()->heartbeatLoop(session,epoch,tm,sessionSocket,route,routeValidationPending));
+                      workers.execute(()->silentRecoveryLoop(session,epoch,tm,sessionSocket,lastInboundAt,pongSeen));
+          '''
+          if old not in s:
+              raise SystemExit('session socket ownership anchor not found')
+          p.write_text(s.replace(old,new,1),encoding='utf-8')
+          print('compile-safe final sessionSocket applied')
+          PY
       - name: Regression guards
         run: |
           set -euxo pipefail
@@ -50,6 +102,9 @@ jobs:
           grep -q 'versionCode = 14' "$ROOT/app/build.gradle.kts"
           grep -q 'versionName = "2.4-diagnostic-stable"' "$ROOT/app/build.gradle.kts"
           grep -q '2.4-DIAGNOSTIC-STABLE' "$ROOT/app/src/main/java/com/onroonlink/sidecar/BridgeService.java"
+          grep -q 'final Socket sessionSocket=s' "$ROOT/app/src/main/java/com/onroonlink/sidecar/BridgeService.java"
+          grep -q 'heartbeatLoop(session,epoch,tm,sessionSocket' "$ROOT/app/src/main/java/com/onroonlink/sidecar/BridgeService.java"
+          grep -q 'silentRecoveryLoop(session,epoch,tm,sessionSocket' "$ROOT/app/src/main/java/com/onroonlink/sidecar/BridgeService.java"
           grep -q 'AUX_UDP_TO_R8=40' "$ROOT/app/src/main/java/com/onroonlink/sidecar/TunnelMux.java"
           grep -q 'AUX_UDP_FROM_R8=41' "$ROOT/app/src/main/java/com/onroonlink/sidecar/TunnelMux.java"
           grep -q 'WLAN-SELF' "$ROOT/app/src/main/java/com/onroonlink/sidecar/BridgeService.java"
@@ -78,11 +133,12 @@ jobs:
           unzip -t "$APK" > /tmp/unzip-test.txt
           mkdir -p out
           cp "$APK" out/ON-Roon-NetShare-R8-Sidecar-v2.4-DIAGNOSTIC-STABLE.apk
-          cp /tmp/r8-v24-source.zip out/R8-v2.4-source.zip
+          (cd work-r8 && zip -qr /tmp/R8-v2.4-source-COMPILE-FIXED.zip r8-v24 -x 'r8-v24/onroonlink-test.jks' 'r8-v24/app/build/*' 'r8-v24/.gradle/*')
+          cp /tmp/R8-v2.4-source-COMPILE-FIXED.zip out/R8-v2.4-source-COMPILE-FIXED.zip
           cp /tmp/apksigner.txt out/APKSIGNER.txt
           cp /tmp/zipalign.txt out/ZIPALIGN.txt
           cp /tmp/unzip-test.txt out/UNZIP-TEST.txt
-          sha256sum out/ON-Roon-NetShare-R8-Sidecar-v2.4-DIAGNOSTIC-STABLE.apk out/R8-v2.4-source.zip > out/SHA256.txt
+          sha256sum out/ON-Roon-NetShare-R8-Sidecar-v2.4-DIAGNOSTIC-STABLE.apk out/R8-v2.4-source-COMPILE-FIXED.zip > out/SHA256.txt
           cat > out/README.txt <<'TXT'
           R8 v2.4 DIAGNOSTIC STABLE
 
@@ -94,6 +150,7 @@ jobs:
           - true gateway write failures still reconnect immediately.
           - bounded persistent diagnostic log + Logcat event codes for route loss, EOF/read error, ping failure, silent timeout and SOOD no-response.
           - UI button can load diagnostic log tail.
+          - compile-safe final session socket ownership prevents stale/reassigned local Socket references from being captured by worker lambdas.
 
           NetShare remains the only R8 VPN. No VpnService was added.
           TXT
