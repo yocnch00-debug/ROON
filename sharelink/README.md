@@ -8,7 +8,8 @@
 - S26 Host는 TCP/UDP SOCKS5 요청을 S26의 `TRANSPORT_CELLULAR` Network에 강제로 바인딩해 LTE/5G로 내보냄.
 - Client는 Android `VpnService` TUN을 통해 일반 인터넷만 S26로 전달.
 - 10/8, 172.16/12, 192.168/16, link-local, multicast 등 로컬 목적지는 VPN route에서 제외해 RoonLink/HiBy Roon Ready/SMB가 물리 Wi-Fi로 직통.
-- 한 S26 Host에 여러 Client가 동시에 접속 가능. 여자친구 Android 폰도 같은 Client APK 사용 가능.
+- 한 S26 Host에 여러 Client가 동시에 접속 가능. R8 II와 다른 Android 폰이 같은 Client APK를 사용 가능.
+- Wi-Fi Direct 보안 외에도 Host가 생성하는 8자리 페어링 코드로 SOCKS5 username/password 인증을 수행.
 
 ## Clean-room 원칙
 NetShare APK의 코드/리소스/문자열은 포함하거나 복제하지 않는다. 동작 요구사항과 Android 공개 API만을 기준으로 새로 구현한다.
@@ -19,6 +20,7 @@ Client의 TUN↔SOCKS5 변환에는 독립 오픈소스 `heiher/hev-socks5-tunne
 - Host Wi-Fi Direct group 자동 생성/복구
 - DNS-SD `_onsharelink._tcp` 광고/탐색
 - Client 자동 발견/접속
+- 8자리 페어링 코드 인증
 - Host 다중 TCP CONNECT
 - Host 다중 UDP ASSOCIATE
 - Host outbound CELLULAR 강제 binding

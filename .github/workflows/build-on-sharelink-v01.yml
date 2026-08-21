@@ -6,6 +6,11 @@ on:
     paths:
       - 'sharelink/**'
       - '.github/workflows/build-on-sharelink-v01.yml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'sharelink/**'
+      - '.github/workflows/build-on-sharelink-v01.yml'
   workflow_dispatch:
 
 permissions:
@@ -45,10 +50,12 @@ jobs:
       - name: Clean-room and routing guards
         run: |
           set -euxo pipefail
-          ! grep -R -i -n 'kha\.prog\.mikrotik\|Proxy-agent: NetShare' sharelink || false
+          ! grep -R -i -n 'kha\.prog\.mikrotik\|Proxy-agent: NetShare' sharelink
           grep -q 'TRANSPORT_CELLULAR' sharelink/host/src/main/java/com/onsharelink/host/ShareHostService.java
           grep -q 'getSocketFactory().createSocket' sharelink/host/src/main/java/com/onsharelink/host/Socks5Server.java
           grep -q 'bindSocket(outbound)' sharelink/host/src/main/java/com/onsharelink/host/Socks5Server.java
+          grep -q 'pairingCode.equals' sharelink/host/src/main/java/com/onsharelink/host/Socks5Server.java
+          grep -q 'username: '\''onshare'\''' sharelink/client/src/main/java/com/onsharelink/client/ShareVpnService.java
           grep -q '192.168.0.0/16' sharelink/README.md
           if grep -q '0.0.0.0/0' sharelink/client/src/main/java/com/onsharelink/client/PublicRoutes.java; then echo 'Default route would swallow local Roon paths'; exit 1; fi
           grep -q '208.0.0.0/4' sharelink/client/src/main/java/com/onsharelink/client/PublicRoutes.java
