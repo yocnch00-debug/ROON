@@ -6,6 +6,11 @@ on:
     paths:
       - 'sharelink/**'
       - '.github/workflows/build-on-sharelink-v16-performance.yml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'sharelink/**'
+      - '.github/workflows/build-on-sharelink-v16-performance.yml'
   workflow_dispatch:
 
 permissions:
