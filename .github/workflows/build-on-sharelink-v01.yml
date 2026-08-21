@@ -35,7 +35,7 @@ jobs:
           gradle-version: '8.9'
       - name: Prepare stable signing key
         run: |
-          base64 -d android-sidecar/onroonlink-test.jks.b64 > sharelink/onroonlink-test.jks
+          base64 -d sharelink/onroonlink-test.jks.b64 > sharelink/onroonlink-test.jks
       - name: Build pinned MIT tun2socks for arm64
         run: |
           set -euxo pipefail
