@@ -81,16 +81,17 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.24.x'
+          cache: false
       - name: Format and test build
         shell: pwsh
         run: |
           gofmt -w pc-health-supervisor/main.go
-          go build ./pc-health-supervisor
+          go build pc-health-supervisor/main.go
       - name: Build GUI supervisor
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force out-pc | Out-Null
-          go build -trimpath -ldflags "-s -w -H=windowsgui" -o out-pc/ONRoonLink-v3.4-PC-Health-Supervisor-v1.0.exe ./pc-health-supervisor
+          go build -trimpath -ldflags "-s -w -H=windowsgui" -o out-pc/ONRoonLink-v3.4-PC-Health-Supervisor-v1.0.exe pc-health-supervisor/main.go
           (Get-FileHash out-pc/ONRoonLink-v3.4-PC-Health-Supervisor-v1.0.exe -Algorithm SHA256).Hash | Out-File out-pc/SHA256.txt
           @'
           @echo off
