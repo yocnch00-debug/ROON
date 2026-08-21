@@ -11,8 +11,8 @@ android {
         // If a newer device rejects it at runtime, MainActivity falls back to
         // Settings.ACTION_WIFI_ADD_NETWORKS.
         targetSdk 28
-        versionCode 10
-        versionName '1.0-rebuild'
+        versionCode 11
+        versionName '1.1-stable'
     }
     signingConfigs {
         onTest {
@@ -26,10 +26,6 @@ android {
         debug { signingConfig signingConfigs.onTest }
         release { minifyEnabled false; signingConfig signingConfigs.onTest }
     }
-    // This APK is a private sideload build for the Android 12 R8 II, not a
-    // Google Play submission. targetSdk 28 is deliberate so the legacy
-    // user-saved WifiConfiguration APIs remain callable; all other release
-    // lint checks stay enabled.
     lint {
         disable 'ExpiredTargetSdkVersion'
     }
