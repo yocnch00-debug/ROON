@@ -1,13 +1,8 @@
-name: Build ON ShareLink v1.0 REBUILD
+name: Build ON ShareLink v1.1 STABLE
 
 on:
   push:
-    branches: [ on-sharelink-v10-rebuild-20260822 ]
-    paths:
-      - 'sharelink/**'
-      - '.github/workflows/build-on-sharelink-v01.yml'
-  pull_request:
-    branches: [ main ]
+    branches: [ on-sharelink-v11-vpn-coexist-20260822 ]
     paths:
       - 'sharelink/**'
       - '.github/workflows/build-on-sharelink-v01.yml'
@@ -43,55 +38,26 @@ jobs:
           git checkout 0428c4ebb0df933ebac8e507832f252ef7da47f1
           git submodule update --init --recursive
           "$ANDROID_HOME/ndk/27.2.12479018/ndk-build" -j2 NDK_PROJECT_PATH="$PWD" APP_BUILD_SCRIPT="$PWD/Android.mk" NDK_APPLICATION_MK="$PWD/Application.mk" APP_ABI=arm64-v8a APP_PLATFORM=android-29
-          test -f libs/arm64-v8a/libhev-socks5-tunnel.so
           mkdir -p "$GITHUB_WORKSPACE/sharelink/client/src/main/jniLibs/arm64-v8a"
           cp libs/arm64-v8a/libhev-socks5-tunnel.so "$GITHUB_WORKSPACE/sharelink/client/src/main/jniLibs/arm64-v8a/"
-      - name: v1.0 architecture and regression guards
+      - name: v1.1 regression guards
         run: |
           set -euxo pipefail
           ! grep -R -i -n 'kha\.prog\.mikrotik\|Proxy-agent: NetShare' sharelink
-
-          # Host UX/lifecycle: real P2P toggle, actual client list, diagnostics/watchdog.
-          grep -q 'ACTION_RECREATE' sharelink/host/src/main/java/com/onsharelink/host/ShareHostService.java
-          grep -q 'removeGroup' sharelink/host/src/main/java/com/onsharelink/host/ShareHostService.java
           grep -q 'getClientList' sharelink/host/src/main/java/com/onsharelink/host/ShareHostService.java
-          grep -q 'WATCHDOG listener_missing' sharelink/host/src/main/java/com/onsharelink/host/ShareHostService.java
-          grep -q 'HostDiag.log' sharelink/host/src/main/java/com/onsharelink/host/ShareHostService.java
-          grep -q 'TRANSPORT_CELLULAR' sharelink/host/src/main/java/com/onsharelink/host/ShareHostService.java
-          grep -q 'setNetworkName(GROUP_NAME)' sharelink/host/src/main/java/com/onsharelink/host/ShareHostService.java
-          grep -q 'setPassphrase(Pairing.code(this))' sharelink/host/src/main/java/com/onsharelink/host/ShareHostService.java
-          grep -q '공유망 Wi-Fi ON / OFF' sharelink/host/src/main/java/com/onsharelink/host/MainActivity.java
-          grep -q 'S26 Host 진단 로그 복사' sharelink/host/src/main/java/com/onsharelink/host/MainActivity.java
-
-          # Host relay: wildcard TCP listener survives P2P address churn; explicit cellular failure, TCP+UDP.
-          grep -q 'server.bind(new InetSocketAddress(port))' sharelink/host/src/main/java/com/onsharelink/host/Socks5Server.java
-          grep -q 'Target t=readTarget(in,atyp)' sharelink/host/src/main/java/com/onsharelink/host/Socks5Server.java
-          ! grep -q 'readTarget(in,atyp,requireNetwork())' sharelink/host/src/main/java/com/onsharelink/host/Socks5Server.java
-          grep -q 'cellular_unavailable' sharelink/host/src/main/java/com/onsharelink/host/Socks5Server.java
+          grep -q 'trafficSummary' sharelink/host/src/main/java/com/onsharelink/host/ShareHostService.java
+          grep -q '접속 IP / 데이터 사용량' sharelink/host/src/main/java/com/onsharelink/host/MainActivity.java
+          grep -q 'OUTBOUND_CELLULAR_BIND_BLOCKED' sharelink/host/src/main/java/com/onsharelink/host/Socks5Server.java
+          grep -q 'OUTBOUND_DEFAULT_ROUTE_OK' sharelink/host/src/main/java/com/onsharelink/host/Socks5Server.java
           grep -q 'handleUdpAssociate' sharelink/host/src/main/java/com/onsharelink/host/Socks5Server.java
-
-          # R8: direct saved-network API first, system saved-network UI fallback, active reconnect.
-          grep -q 'addNetwork(cfg)' sharelink/client/src/main/java/com/onsharelink/client/WifiBootstrap.java
-          grep -q 'saveConfiguration' sharelink/client/src/main/java/com/onsharelink/client/WifiBootstrap.java
-          grep -q 'enableNetwork' sharelink/client/src/main/java/com/onsharelink/client/WifiBootstrap.java
-          grep -q 'reconnect' sharelink/client/src/main/java/com/onsharelink/client/WifiBootstrap.java
-          grep -q 'ACTION_WIFI_ADD_NETWORKS' sharelink/client/src/main/java/com/onsharelink/client/MainActivity.java
-          grep -q 'EXTRA_WIFI_NETWORK_LIST' sharelink/client/src/main/java/com/onsharelink/client/MainActivity.java
-          grep -q 'removeNetworkSuggestions' sharelink/client/src/main/java/com/onsharelink/client/MainActivity.java
-          ! grep -q 'addNetworkSuggestions' sharelink/client/src/main/java/com/onsharelink/client/ClientLinkService.java
-          grep -q 'WifiBootstrap.reconnectSaved' sharelink/client/src/main/java/com/onsharelink/client/ClientLinkService.java
-          grep -q '192.168.49.1' sharelink/client/src/main/java/com/onsharelink/client/ClientLinkService.java
-          grep -q 'isAnyLocalAddress' sharelink/client/src/main/java/com/onsharelink/client/ClientLinkService.java
-          grep -q 'SOCKS_PROBE' sharelink/client/src/main/java/com/onsharelink/client/ClientLinkService.java
+          grep -q 'HEALTH_TRANSIENT_FAIL' sharelink/client/src/main/java/com/onsharelink/client/ClientLinkService.java
+          grep -q 'HEALTH_OK' sharelink/client/src/main/java/com/onsharelink/client/ClientLinkService.java
+          grep -q 'notifyOnly' sharelink/client/src/main/java/com/onsharelink/client/ShareVpnService.java
           grep -q 'targetSdk 28' sharelink/client/build.gradle
-
-          # VPN: existing HEV engine, authenticated SOCKS, public routes only so Roon/local LAN stay physical.
-          grep -q 'hev-sharelink.log' sharelink/client/src/main/java/com/onsharelink/client/ShareVpnService.java
-          grep -q 'username: '\''onshare'\''' sharelink/client/src/main/java/com/onsharelink/client/ShareVpnService.java
+          grep -q 'addNetwork(cfg)' sharelink/client/src/main/java/com/onsharelink/client/WifiBootstrap.java
           if grep -q '0.0.0.0/0' sharelink/client/src/main/java/com/onsharelink/client/PublicRoutes.java; then echo 'Default route would swallow local Roon paths'; exit 1; fi
-          grep -q '208.0.0.0/4' sharelink/client/src/main/java/com/onsharelink/client/PublicRoutes.java
-          grep -q "versionName '1.0-rebuild'" sharelink/host/build.gradle
-          grep -q "versionName '1.0-rebuild'" sharelink/client/build.gradle
+          grep -q "versionName '1.1-stable'" sharelink/host/build.gradle
+          grep -q "versionName '1.1-stable'" sharelink/client/build.gradle
       - name: Build signed Host and Client APKs
         working-directory: sharelink
         run: gradle --no-daemon :host:assembleRelease :client:assembleRelease
@@ -108,8 +74,8 @@ jobs:
           unzip -t "$H" >/tmp/host-unzip.txt
           unzip -t "$C" >/tmp/client-unzip.txt
           mkdir -p out
-          cp "$H" out/ON-ShareLink-S26-Host-v1.0-REBUILD.apk
-          cp "$C" out/ON-ShareLink-R8-Client-v1.0-REBUILD.apk
+          cp "$H" out/ON-ShareLink-S26-Host-v1.1-STABLE.apk
+          cp "$C" out/ON-ShareLink-R8-Client-v1.1-STABLE.apk
           cp sharelink/README.md out/README.md
           cp sharelink/THIRD_PARTY_NOTICES.md out/THIRD_PARTY_NOTICES.md
           cp /tmp/host-sign.txt out/HOST-SIGNATURE.txt
@@ -117,5 +83,5 @@ jobs:
           sha256sum out/*.apk > out/SHA256SUMS.txt
       - uses: actions/upload-artifact@v4
         with:
-          name: ON-ShareLink-v1.0-REBUILD
+          name: ON-ShareLink-v1.1-STABLE
           path: out/
