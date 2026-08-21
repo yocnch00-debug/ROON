@@ -1,0 +1,130 @@
+name: Build ON ShareLink PC Client v0.1
+
+on:
+  push:
+    branches: [ on-sharelink-pc-client-v01-20260822 ]
+    paths:
+      - 'pc-client/**'
+      - '.github/workflows/build-on-sharelink-pc-client-v01.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Fetch pinned HEV Windows engine and official Wintun
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force pc-client/Resources | Out-Null
+          New-Item -ItemType Directory -Force thirdparty | Out-Null
+
+          $hevTag = '2.17.0'
+          $headers = @{ 'User-Agent' = 'ON-ShareLink-CI' }
+          $rel = Invoke-RestMethod -Headers $headers -Uri "https://api.github.com/repos/heiher/hev-socks5-tunnel/releases/tags/$hevTag"
+          $rel.assets | ForEach-Object { Write-Host "HEV asset: $($_.name) digest=$($_.digest)" }
+          $asset = $rel.assets | Where-Object {
+            $_.name -match '(?i)(windows|win)' -and $_.name -match '(?i)(x86_64|amd64|x64)'
+          } | Select-Object -First 1
+          if (-not $asset) { throw 'No HEV Windows x64 release asset found' }
+          $hevDownload = Join-Path $PWD ('thirdparty/' + $asset.name)
+          Invoke-WebRequest -Headers $headers -Uri $asset.browser_download_url -OutFile $hevDownload
+          if ($asset.digest -and $asset.digest.StartsWith('sha256:')) {
+            $expected = $asset.digest.Substring(7).ToLowerInvariant()
+            $actual = (Get-FileHash $hevDownload -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($actual -ne $expected) { throw "HEV digest mismatch expected=$expected actual=$actual" }
+          }
+
+          $hevExe = $null
+          if ($hevDownload.EndsWith('.exe')) {
+            $hevExe = $hevDownload
+          } else {
+            $extract = Join-Path $PWD 'thirdparty/hev-extract'
+            New-Item -ItemType Directory -Force $extract | Out-Null
+            if ($hevDownload.EndsWith('.zip')) { Expand-Archive -Path $hevDownload -DestinationPath $extract -Force }
+            else { tar -xf $hevDownload -C $extract }
+            $hevExe = (Get-ChildItem $extract -Recurse -File | Where-Object { $_.Name -match '(?i)^hev-socks5-tunnel.*(\.exe)?$' } | Select-Object -First 1).FullName
+          }
+          if (-not $hevExe) { throw 'HEV executable not found after extraction' }
+          Copy-Item $hevExe pc-client/Resources/hev-socks5-tunnel.exe -Force
+
+          $wintunUrl = 'https://www.wintun.net/builds/wintun-0.14.1.zip'
+          $wintunZip = Join-Path $PWD 'thirdparty/wintun-0.14.1.zip'
+          Invoke-WebRequest -Uri $wintunUrl -OutFile $wintunZip
+          $expectedWintun = '07c256185d6ee3652e09fa55c0b673e2624b565e02c4b9091c79ca7d2f24ef51'
+          $actualWintun = (Get-FileHash $wintunZip -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actualWintun -ne $expectedWintun) { throw "Wintun digest mismatch expected=$expectedWintun actual=$actualWintun" }
+          $wintunDir = Join-Path $PWD 'thirdparty/wintun'
+          Expand-Archive -Path $wintunZip -DestinationPath $wintunDir -Force
+          $wintunDll = (Get-ChildItem $wintunDir -Recurse -File -Filter wintun.dll | Where-Object { $_.FullName -match '(?i)amd64' } | Select-Object -First 1).FullName
+          if (-not $wintunDll) { throw 'Official AMD64 wintun.dll not found' }
+          Copy-Item $wintunDll pc-client/Resources/wintun.dll -Force
+
+          Invoke-WebRequest -Headers $headers -Uri "https://raw.githubusercontent.com/heiher/hev-socks5-tunnel/$hevTag/License" -OutFile thirdparty/HEV-LICENSE.txt
+          $wintunLicense = Get-ChildItem $wintunDir -Recurse -File | Where-Object { $_.Name -match '(?i)license' } | Select-Object -First 1
+          if ($wintunLicense) { Copy-Item $wintunLicense.FullName thirdparty/WINTUN-LICENSE.txt -Force }
+
+          & pc-client/Resources/hev-socks5-tunnel.exe --version 2>&1 | Write-Host
+          Get-FileHash pc-client/Resources/hev-socks5-tunnel.exe -Algorithm SHA256
+          Get-FileHash pc-client/Resources/wintun.dll -Algorithm SHA256
+
+      - name: Guard PC client isolation and route safety
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $src = Get-Content pc-client/Program.cs -Raw
+          if ($src -notmatch '192\.168\.49\.1') { throw 'S26 gateway missing' }
+          if ($src -notmatch '51950') { throw 'S26 SOCKS port missing' }
+          if ($src -notmatch 'PublicRoutes') { throw 'public split route list missing' }
+          if ($src -match '0\.0\.0\.0/0') { throw 'unsafe default route introduced' }
+          if ($src -match '192\.168\.49\.0/24') { throw 'S26 local network must not enter TUN route list' }
+          if ($src -notmatch "udp: 'udp'") { throw 'UDP relay not enabled' }
+          if ($src -notmatch "log-level: warn") { throw 'performance log level regression' }
+          if ($src -notmatch 'ProbeSocks') { throw 'auth gate missing' }
+
+      - name: Publish self-contained Windows x64 EXE
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet publish pc-client/ONShareLinkPC.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o publish
+          if (-not (Test-Path 'publish/ON-ShareLink-PC-Client.exe')) { throw 'PC client EXE missing' }
+          $size = (Get-Item 'publish/ON-ShareLink-PC-Client.exe').Length
+          if ($size -lt 1000000) { throw "EXE unexpectedly small: $size" }
+
+      - name: Package and checksum
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force out | Out-Null
+          Copy-Item publish/ON-ShareLink-PC-Client.exe out/ON-ShareLink-PC-Client-v0.1.exe
+          Copy-Item pc-client/README.md out/README-PC-CLIENT.md
+          @'
+          ON ShareLink PC Client v0.1 third-party components
+
+          HEV Socks5 Tunnel 2.17.0 — MIT licensed
+          https://github.com/heiher/hev-socks5-tunnel
+
+          Wintun 0.14.1 signed prebuilt binary — distributed under the prebuilt binaries license included by WireGuard LLC.
+          https://www.wintun.net/
+          '@ | Set-Content out/THIRD_PARTY_NOTICES.txt -Encoding UTF8
+          if (Test-Path thirdparty/HEV-LICENSE.txt) { Add-Content out/THIRD_PARTY_NOTICES.txt "`n--- HEV LICENSE ---"; Get-Content thirdparty/HEV-LICENSE.txt | Add-Content out/THIRD_PARTY_NOTICES.txt }
+          if (Test-Path thirdparty/WINTUN-LICENSE.txt) { Add-Content out/THIRD_PARTY_NOTICES.txt "`n--- WINTUN LICENSE ---"; Get-Content thirdparty/WINTUN-LICENSE.txt | Add-Content out/THIRD_PARTY_NOTICES.txt }
+          $hash = (Get-FileHash out/ON-ShareLink-PC-Client-v0.1.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  ON-ShareLink-PC-Client-v0.1.exe" | Set-Content out/SHA256SUMS.txt -Encoding ASCII
+          Compress-Archive -Path out/* -DestinationPath ON-ShareLink-PC-Client-v0.1.zip -Force
+          Copy-Item ON-ShareLink-PC-Client-v0.1.zip out/ON-ShareLink-PC-Client-v0.1.zip
+          Get-Content out/SHA256SUMS.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ON-ShareLink-PC-Client-v0.1
+          path: out/
