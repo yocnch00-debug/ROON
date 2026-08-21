@@ -38,6 +38,7 @@ jobs:
             $names = ($rel.assets | ForEach-Object { $_.name }) -join ', '
             throw "No HEV Windows x64 release asset found. Assets: $names"
           }
+          Write-Host "HEV selected asset: $($asset.name)"
           $hevDownload = Join-Path $PWD ('thirdparty/' + $asset.name)
           Invoke-WebRequest -Headers $headers -Uri $asset.browser_download_url -OutFile $hevDownload
           if ($asset.digest -and $asset.digest.StartsWith('sha256:')) {
@@ -47,15 +48,21 @@ jobs:
           }
 
           $hevExe = $null
-          if ($hevDownload.EndsWith('.exe')) {
-            $hevExe = $hevDownload
-          } else {
+          if ($hevDownload -match '(?i)\.zip$') {
             $extract = Join-Path $PWD 'thirdparty/hev-extract'
             New-Item -ItemType Directory -Force $extract | Out-Null
-            if ($hevDownload.EndsWith('.zip')) { Expand-Archive -Path $hevDownload -DestinationPath $extract -Force }
-            else { tar -xf $hevDownload -C $extract }
+            Expand-Archive -Path $hevDownload -DestinationPath $extract -Force
             $candidate = Get-ChildItem $extract -Recurse -File | Where-Object { $_.Name -match '(?i)^hev-socks5-tunnel.*(\.exe)?$' } | Select-Object -First 1
             if ($candidate) { $hevExe = $candidate.FullName }
+          } elseif ($hevDownload -match '(?i)\.(tar|tar\.xz|txz|tar\.gz|tgz)$') {
+            $extract = Join-Path $PWD 'thirdparty/hev-extract'
+            New-Item -ItemType Directory -Force $extract | Out-Null
+            tar -xf $hevDownload -C $extract
+            $candidate = Get-ChildItem $extract -Recurse -File | Where-Object { $_.Name -match '(?i)^hev-socks5-tunnel.*(\.exe)?$' } | Select-Object -First 1
+            if ($candidate) { $hevExe = $candidate.FullName }
+          } else {
+            # HEV Windows release is currently a raw PE binary without .exe extension.
+            $hevExe = $hevDownload
           }
           if (-not $hevExe) { throw 'HEV executable not found after extraction' }
           Copy-Item $hevExe pc-client/Resources/hev-socks5-tunnel.exe -Force
