@@ -43,7 +43,11 @@ jobs:
           cd /tmp/hev
           git checkout 0428c4ebb0df933ebac8e507832f252ef7da47f1
           git submodule update --init --recursive
-          "$ANDROID_HOME/ndk/27.2.12479018/ndk-build" -j2 APP_ABI=arm64-v8a APP_PLATFORM=android-29
+          "$ANDROID_HOME/ndk/27.2.12479018/ndk-build" -j2 \
+            NDK_PROJECT_PATH="$PWD" \
+            APP_BUILD_SCRIPT="$PWD/Android.mk" \
+            NDK_APPLICATION_MK="$PWD/Application.mk" \
+            APP_ABI=arm64-v8a APP_PLATFORM=android-29
           test -f libs/arm64-v8a/libhev-socks5-tunnel.so
           mkdir -p "$GITHUB_WORKSPACE/sharelink/client/src/main/jniLibs/arm64-v8a"
           cp libs/arm64-v8a/libhev-socks5-tunnel.so "$GITHUB_WORKSPACE/sharelink/client/src/main/jniLibs/arm64-v8a/"
