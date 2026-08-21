@@ -1,0 +1,93 @@
+name: Build ON ShareLink v1.3 AUTH GATE
+
+on:
+  push:
+    branches: [ on-sharelink-v13-auth-gate-20260822 ]
+    paths:
+      - 'sharelink/**'
+      - '.github/workflows/build-on-sharelink-v01.yml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'sharelink/**'
+      - '.github/workflows/build-on-sharelink-v01.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - name: Install Android SDK and NDK
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager 'platforms;android-35' 'build-tools;35.0.0' 'ndk;27.2.12479018'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+      - name: Prepare stable signing key
+        run: base64 -d sharelink/onroonlink-test.jks.b64 > sharelink/onroonlink-test.jks
+      - name: Build pinned MIT tun2socks for arm64
+        run: |
+          set -euxo pipefail
+          git clone --recursive https://github.com/heiher/hev-socks5-tunnel.git /tmp/hev
+          cd /tmp/hev
+          git checkout 0428c4ebb0df933ebac8e507832f252ef7da47f1
+          git submodule update --init --recursive
+          "$ANDROID_HOME/ndk/27.2.12479018/ndk-build" -j2 NDK_PROJECT_PATH="$PWD" APP_BUILD_SCRIPT="$PWD/Android.mk" NDK_APPLICATION_MK="$PWD/Application.mk" APP_ABI=arm64-v8a APP_PLATFORM=android-29
+          mkdir -p "$GITHUB_WORKSPACE/sharelink/client/src/main/jniLibs/arm64-v8a"
+          cp libs/arm64-v8a/libhev-socks5-tunnel.so "$GITHUB_WORKSPACE/sharelink/client/src/main/jniLibs/arm64-v8a/"
+      - name: v1.3 regression guards
+        run: |
+          set -euxo pipefail
+          ! grep -R -i -n 'kha\.prog\.mikrotik\|Proxy-agent: NetShare' sharelink
+          grep -q 'getClientList' sharelink/host/src/main/java/com/onsharelink/host/ShareHostService.java
+          grep -q 'trafficSummary' sharelink/host/src/main/java/com/onsharelink/host/ShareHostService.java
+          grep -q 'OUTBOUND_DEFAULT_ROUTE_OK' sharelink/host/src/main/java/com/onsharelink/host/Socks5Server.java
+          grep -q 'handleUdpAssociate' sharelink/host/src/main/java/com/onsharelink/host/Socks5Server.java
+          grep -q 'SOCKS_AUTH_OK' sharelink/client/src/main/java/com/onsharelink/client/ClientLinkService.java
+          grep -q 'external preflight intentionally skipped' sharelink/client/src/main/java/com/onsharelink/client/ClientLinkService.java
+          grep -q 'HEALTH_TRANSIENT_FAIL' sharelink/client/src/main/java/com/onsharelink/client/ClientLinkService.java
+          grep -q 'Roon Sidecar wlan0 직통' sharelink/client/src/main/java/com/onsharelink/client/ClientLinkService.java
+          grep -q 'addDisallowedApplication("com.onroonlink.sidecar")' sharelink/client/src/main/java/com/onsharelink/client/ShareVpnService.java
+          grep -q 'VPN_BYPASS sidecar=com.onroonlink.sidecar' sharelink/client/src/main/java/com/onsharelink/client/ShareVpnService.java
+          grep -q 'targetSdk 28' sharelink/client/build.gradle
+          grep -q 'addNetwork(cfg)' sharelink/client/src/main/java/com/onsharelink/client/WifiBootstrap.java
+          if grep -q '0.0.0.0/0' sharelink/client/src/main/java/com/onsharelink/client/PublicRoutes.java; then echo 'Default route would swallow local Roon paths'; exit 1; fi
+          grep -q "versionName '1.1-stable'" sharelink/host/build.gradle
+          grep -q "versionName '1.3-auth-gate'" sharelink/client/build.gradle
+      - name: Build signed Host and Client APKs
+        working-directory: sharelink
+        run: gradle --no-daemon :host:assembleRelease :client:assembleRelease
+      - name: Verify APKs and package
+        run: |
+          set -euxo pipefail
+          H=sharelink/host/build/outputs/apk/release/host-release.apk
+          C=sharelink/client/build/outputs/apk/release/client-release.apk
+          test -f "$H"; test -f "$C"
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$H" > /tmp/host-sign.txt
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$C" > /tmp/client-sign.txt
+          "$ANDROID_HOME/build-tools/35.0.0/zipalign" -c -P 16 -v 4 "$H" > /tmp/host-align.txt
+          "$ANDROID_HOME/build-tools/35.0.0/zipalign" -c -P 16 -v 4 "$C" > /tmp/client-align.txt
+          unzip -t "$H" >/tmp/host-unzip.txt
+          unzip -t "$C" >/tmp/client-unzip.txt
+          mkdir -p out
+          cp "$H" out/ON-ShareLink-S26-Host-v1.1-STABLE.apk
+          cp "$C" out/ON-ShareLink-R8-Client-v1.3-AUTH-GATE.apk
+          cp sharelink/README.md out/README.md
+          cp sharelink/THIRD_PARTY_NOTICES.md out/THIRD_PARTY_NOTICES.md
+          cp /tmp/host-sign.txt out/HOST-SIGNATURE.txt
+          cp /tmp/client-sign.txt out/CLIENT-SIGNATURE.txt
+          sha256sum out/*.apk > out/SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ON-ShareLink-v1.3-AUTH-GATE
+          path: out/
