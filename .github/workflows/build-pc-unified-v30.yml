@@ -1,0 +1,136 @@
+name: Build ON Roon PC Unified v3.0
+
+on:
+  push:
+    branches: [ netshare-sidecar-v1 ]
+    paths:
+      - 'pc-relay/roon_netshare_relay.py'
+      - 'pc-relay/roon_netshare_relay_v3.py'
+      - 'pc-relay/roon_netshare_unified_v30.py'
+      - 'tools/patch-pc-v25-fast-backend-recovery.py'
+      - 'tools/patch-pc-v26-raat-aux.py'
+      - 'tools/patch-pc-v26-regexfix.py'
+      - '.github/workflows/build-pc-unified-v30.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-unified:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Reconstruct proven v2.6 golden RAAT engine
+        run: |
+          python tools/patch-pc-v25-fast-backend-recovery.py
+          python tools/patch-pc-v26-raat-aux.py
+          python tools/patch-pc-v26-regexfix.py
+
+      - name: Unified full-duplex regression checks
+        shell: bash
+        run: |
+          python -m py_compile pc-relay/roon_netshare_relay.py pc-relay/roon_netshare_relay_v3.py pc-relay/roon_netshare_unified_v30.py
+          python - <<'PY'
+          import sys,json,struct
+          sys.path.insert(0,'pc-relay')
+          import roon_netshare_relay as b
+          import roon_netshare_relay_v3 as v
+          import roon_netshare_unified_v30 as u
+
+          # Golden v2.6 invariants: do not regress the path that actually played 352.8k/32-bit.
+          assert v.VERSION=='2.6-FINAL-RAAT-AUX-TCP-UDP'
+          assert v.AUX_UDP_TO_R8==40 and v.AUX_UDP_FROM_R8==41 and v.AUX_UDP_CLOSE==42
+          tid,probe=v.make_probe()
+          p=b.parse_sood(probe)
+          assert p and p[0]=='Q' and p[1]['service_id']==v.RAAT_SERVICE
+          assert 'query_service_id' not in p[1]
+
+          obj={'status':'Success','clock_port':40559,
+               'transport':{'stream_port':'43541','sample_rate':44100},
+               'endpoint':'192.168.50.244:43063'}
+          learned=v.extract_aux_ports_from_json(obj)
+          vals={port for _,port in learned}
+          assert {40559,43541,43063}.issubset(vals)
+          assert ('transport.sample_rate',44100) not in learned
+
+          body=struct.pack('>I',98)+bytes([1])+json.dumps(
+              {'status':'Success','clock_port':40559,'audio_port':43541}).encode()
+          frame=struct.pack('>II',len(body)+8,v.RAAT_LL_RESPONSE)+body
+          rem,a=v.parse_raat_ports(b'',frame[:3])
+          rem,c=v.parse_raat_ports(rem,frame[3:11])
+          rem,d=v.parse_raat_ports(rem,frame[11:])
+          assert rem==b'' and {port for _,port in a+c+d}=={40559,43541}
+
+          # Unified v3.0 invariants.
+          assert u.VERSION=='3.0-UNIFIED-KEYLESS-RAAT-AUX'
+          src=open('pc-relay/roon_netshare_unified_v30.py',encoding='utf-8').read()
+          assert 'legacy_probe_lan' in src and 'legacy_open_r8_to_pc' in src
+          assert 'raat.handle_frame_v26' in src
+          # Critical safety rule: do not resurrect the old listener that occupied Roon UDP :9003.
+          assert 'target=base.pc_sood_listener' not in src
+          assert 'target=base.pcp_keepalive_loop' in src
+          assert 'target=raat.probe_loop' in src
+
+          # Frame-dispatch test without touching the network.
+          calls=[]
+          class DummyThread:
+              def __init__(self,target=None,args=(),daemon=None,**kw):
+                  self.target=target; self.args=args; self.daemon=daemon
+              def start(self): calls.append((self.target,self.args))
+          real_thread=u.threading.Thread
+          u.threading.Thread=DummyThread
+          try:
+              q=b.encode_sood('Q',{'_tid':'T','service_id':'00720724-5143-4a9b-abac-0e50cba674bb'})
+              ep=b.endpoint_packet('192.168.49.149',9003,q)
+              u.handle_frame_unified(object(),b.SOOD_QUERY_R8,101,ep)
+              assert calls and calls[-1][0] is u.legacy_probe_lan and calls[-1][1][1]==101
+
+              ep2=b.endpoint_packet('192.168.50.84',9330)
+              u.handle_frame_unified(object(),b.OPEN_R8,103,ep2)
+              assert calls[-1][0] is u.legacy_open_r8_to_pc and calls[-1][1][1:]==(103,'192.168.50.84',9330)
+          finally:
+              u.threading.Thread=real_thread
+
+          # Modern HELLO still goes through the exact v2.6 handler chain.
+          sent=[]
+          class FakeTunnel:
+              alive=True
+              def send(self,typ,sid=0,payload=b''): sent.append((typ,sid,payload))
+          ft=FakeTunnel()
+          u.handle_frame_unified(ft,b.HELLO,0,b'R8II|ON-SIDECAR|2.1-RAAT-AUX-TCP-UDP')
+          assert any(x[0]==b.STATUS and b'RELAY_OK' in x[2] for x in sent)
+
+          print('Unified v3.0 KEYLESS reverse + golden v2.6 RAAT regression tests PASS')
+          PY
+
+      - name: Install PyInstaller
+        run: python -m pip install --disable-pip-version-check pyinstaller==6.15.0
+
+      - name: Build one unified EXE
+        run: pyinstaller --clean --onefile --paths pc-relay --name ON-Roon-NetShare-PC-UNIFIED-v3.0-KEYLESS-RAAT-AUX pc-relay/roon_netshare_unified_v30.py
+
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force out | Out-Null
+          Copy-Item dist/ON-Roon-NetShare-PC-UNIFIED-v3.0-KEYLESS-RAAT-AUX.exe out/
+          (Get-FileHash out/ON-Roon-NetShare-PC-UNIFIED-v3.0-KEYLESS-RAAT-AUX.exe -Algorithm SHA256).Hash | Out-File out/SHA256.txt
+          @(
+            'ONE PC EXE: v1.3 KEYLESS reverse Core path + proven v2.6 Roon Ready/RAAT AUX path.',
+            'Keep R8 Sidecar v2.1 RAAT AUX TCP+UDP and S26 Transport v2.0 unchanged.',
+            'The v2.6 native RAAT discovery/stable backend/AUX TCP+clock-UDP logic is reconstructed unchanged before this entry point is built.',
+            'v1.3 reverse compatibility restored: R8 SOOD query -> PC LAN response and R8 OPEN_R8 -> PC Core TCP.',
+            'The old v1.3 PC UDP 9003 listener is intentionally NOT restored; Roon keeps ownership of native RAAT discovery on UDP 9003.',
+            'Expected playback logs remain: RAAT AUX PORT LEARNED / RAAT AUX TCP LISTEN / RAAT AUX UDP LISTEN.',
+            'Reverse compatibility logs: KEYLESS REVERSE SOOD / KEYLESS REVERSE TCP OPEN.'
+          ) | Set-Content out/INSTALL.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ON-Roon-PC-UNIFIED-v3.0-KEYLESS-RAAT-AUX
+          path: out/
