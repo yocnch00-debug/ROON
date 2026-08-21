@@ -1,0 +1,33 @@
+plugins { id 'com.android.application' }
+
+android {
+    namespace 'com.onsharelink.client'
+    compileSdk 35
+    defaultConfig {
+        applicationId 'com.onsharelink.client'
+        minSdk 26
+        // R8 II is Android 12. target 28 intentionally keeps the legacy user-saved
+        // WifiConfiguration path available for this sideloaded personal client.
+        // If a newer device rejects it at runtime, MainActivity falls back to
+        // Settings.ACTION_WIFI_ADD_NETWORKS.
+        targetSdk 28
+        versionCode 11
+        versionName '1.1-stable'
+    }
+    signingConfigs {
+        onTest {
+            storeFile file('../onroonlink-test.jks')
+            storePassword 'onroonlink'
+            keyAlias 'onroonlink'
+            keyPassword 'onroonlink'
+        }
+    }
+    buildTypes {
+        debug { signingConfig signingConfigs.onTest }
+        release { minifyEnabled false; signingConfig signingConfigs.onTest }
+    }
+    lint {
+        disable 'ExpiredTargetSdkVersion'
+    }
+    sourceSets { main { jniLibs.srcDirs = ['src/main/jniLibs'] } }
+}
