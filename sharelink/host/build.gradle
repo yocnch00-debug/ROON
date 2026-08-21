@@ -1,0 +1,14 @@
+plugins { id 'com.android.application' }
+
+android {
+    namespace 'com.onsharelink.host'
+    compileSdk 35
+    defaultConfig {
+        applicationId 'com.onsharelink.host'
+        minSdk 26
+        targetSdk 35
+        versionCode 1
+        versionName '0.1-cleanroom'
+    }
+    buildTypes { release { minifyEnabled false } }
+}
