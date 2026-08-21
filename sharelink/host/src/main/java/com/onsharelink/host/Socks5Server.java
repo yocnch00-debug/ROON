@@ -12,6 +12,10 @@ import java.util.function.*;
 public final class Socks5Server implements Closeable {
     private final InetAddress bindAddress;
     private final int port;
+    /* Kept in the constructor for source compatibility/status ownership, but v1.4 intentionally
+       never binds outbound sockets to this Network. Existing ON RoonLink is a split VPN; forcing
+       a socket onto the physical CELLULAR Network returns EPERM on the S26. Plain sockets follow
+       Android's normal public/default route, which remains LTE/5G for Internet destinations. */
     private final Supplier<Network> network;
     private final Consumer<String> event;
     private final String pairingCode;
@@ -30,7 +34,7 @@ public final class Socks5Server implements Closeable {
         if(isRunning())return;
         server=new ServerSocket();server.setReuseAddress(true);
         server.bind(new InetSocketAddress(port));
-        running=true;emit("SOCKS_LISTEN 0.0.0.0:"+port+" p2p="+bindAddress.getHostAddress());pool.execute(this::acceptLoop);
+        running=true;emit("SOCKS_LISTEN 0.0.0.0:"+port+" p2p="+bindAddress.getHostAddress()+" outbound=DEFAULT_ROUTE_NO_BIND");pool.execute(this::acceptLoop);
     }
 
     public String trafficSummary(){
@@ -73,11 +77,10 @@ public final class Socks5Server implements Closeable {
     }
 
     private void handleConnect(Socket client,OutputStream out,Target t,ClientTraffic tr) throws Exception {
-        Network n=network.get();
-        InetAddress target=resolveTarget(n,t);
+        InetAddress target=resolveTarget(t);
         Socket remote=null;
         try{
-            remote=openOutboundTcp(n,target,t.port);
+            remote=openOutboundTcp(target,t.port);
             client.setSoTimeout(0);remote.setSoTimeout(0);
             InetSocketAddress local=(InetSocketAddress)remote.getLocalSocketAddress();InetAddress la=local.getAddress()==null?InetAddress.getByName("0.0.0.0"):local.getAddress();reply(out,0,la,local.getPort());
             Socket finalRemote=remote;AtomicBoolean once=new AtomicBoolean();Runnable close=()->{if(once.compareAndSet(false,true)){try{client.close();}catch(Exception ignored){}try{finalRemote.close();}catch(Exception ignored){}}};
@@ -89,49 +92,29 @@ public final class Socks5Server implements Closeable {
         }
     }
 
-    private Socket openOutboundTcp(Network n,InetAddress target,int port)throws Exception{
-        if(n!=null){
-            Socket forced=null;
-            try{
-                forced=n.getSocketFactory().createSocket();forced.setTcpNoDelay(true);forced.connect(new InetSocketAddress(target,port),10000);
-                emit("OUTBOUND_CELLULAR_BIND_OK target="+target.getHostAddress()+":"+port+" local="+forced.getLocalSocketAddress());return forced;
-            }catch(Exception e){
-                try{if(forced!=null)forced.close();}catch(Exception ignored){}
-                emit("OUTBOUND_CELLULAR_BIND_BLOCKED "+safe(e)+" -> default-route fallback");
-            }
-        }else emit("OUTBOUND_CELLULAR_OBJECT_MISSING -> default-route fallback");
-
-        Socket fallback=new Socket();fallback.setTcpNoDelay(true);fallback.connect(new InetSocketAddress(target,port),10000);
-        emit("OUTBOUND_DEFAULT_ROUTE_OK target="+target.getHostAddress()+":"+port+" local="+fallback.getLocalSocketAddress());return fallback;
+    private Socket openOutboundTcp(InetAddress target,int port)throws Exception{
+        Socket s=new Socket();s.setTcpNoDelay(true);s.connect(new InetSocketAddress(target,port),10000);
+        emit("OUTBOUND_DEFAULT_ROUTE_TCP_OK target="+target.getHostAddress()+":"+port+" local="+s.getLocalSocketAddress());return s;
     }
 
-    private InetAddress resolveTarget(Network n,Target t)throws Exception{
+    private InetAddress resolveTarget(Target t)throws Exception{
         if(t.address!=null)return t.address;
-        if(n!=null){
-            try{InetAddress[] aa=n.getAllByName(t.host);if(aa!=null&&aa.length>0)return aa[0];}
-            catch(Exception e){emit("DNS_CELLULAR_BIND_BLOCKED host="+t.host+" "+safe(e)+" -> default resolver fallback");}
-        }
-        InetAddress[] aa=InetAddress.getAllByName(t.host);if(aa==null||aa.length==0)throw new UnknownHostException(t.host);return aa[0];
+        InetAddress[] aa=InetAddress.getAllByName(t.host);if(aa==null||aa.length==0)throw new UnknownHostException(t.host);
+        emit("DNS_DEFAULT_ROUTE_OK host="+t.host+" result="+aa[0].getHostAddress());return aa[0];
     }
 
     private void pump(Socket from,Socket to,Runnable close,ClientTraffic tr,boolean upload){byte[] b=new byte[32768];try{InputStream in=from.getInputStream();OutputStream out=to.getOutputStream();for(int r;(r=in.read(b))>=0;){if(r>0){out.write(b,0,r);out.flush();if(upload)tr.up.addAndGet(r);else tr.down.addAndGet(r);tr.touch();}}}catch(Exception ignored){}finally{close.run();}}
 
     private void handleUdpAssociate(Socket control,OutputStream controlOut,ClientTraffic tr) throws Exception {
-        Network n=network.get();
-        DatagramSocket relay=new DatagramSocket(new InetSocketAddress(bindAddress,0));DatagramSocket outbound=openOutboundUdp(n);relay.setSoTimeout(1000);outbound.setSoTimeout(1000);
+        DatagramSocket relay=new DatagramSocket(new InetSocketAddress(bindAddress,0));DatagramSocket outbound=openOutboundUdp();relay.setSoTimeout(1000);outbound.setSoTimeout(1000);
         AtomicReference<SocketAddress> clientEp=new AtomicReference<>();AtomicBoolean alive=new AtomicBoolean(true);reply(controlOut,0,bindAddress,relay.getLocalPort());
-        pool.execute(()->{byte[] buf=new byte[65535];while(alive.get()){try{DatagramPacket p=new DatagramPacket(buf,buf.length);relay.receive(p);if(!p.getAddress().equals(control.getInetAddress()))continue;UdpFrame f=parseUdp(p.getData(),p.getOffset(),p.getLength(),n);if(f==null)continue;clientEp.set(p.getSocketAddress());tr.up.addAndGet(f.data.length);tr.touch();outbound.send(new DatagramPacket(f.data,f.data.length,f.target));}catch(SocketTimeoutException ignored){}catch(Exception e){if(alive.get())emit("SOCKS_ERROR udp_in "+safe(e));break;}}});
+        pool.execute(()->{byte[] buf=new byte[65535];while(alive.get()){try{DatagramPacket p=new DatagramPacket(buf,buf.length);relay.receive(p);if(!p.getAddress().equals(control.getInetAddress()))continue;UdpFrame f=parseUdp(p.getData(),p.getOffset(),p.getLength());if(f==null)continue;clientEp.set(p.getSocketAddress());tr.up.addAndGet(f.data.length);tr.touch();outbound.send(new DatagramPacket(f.data,f.data.length,f.target));}catch(SocketTimeoutException ignored){}catch(Exception e){if(alive.get())emit("SOCKS_ERROR udp_in "+safe(e));break;}}});
         pool.execute(()->{byte[] buf=new byte[65535];while(alive.get()){try{DatagramPacket p=new DatagramPacket(buf,buf.length);outbound.receive(p);SocketAddress ce=clientEp.get();if(ce==null)continue;tr.down.addAndGet(p.getLength());tr.touch();byte[] frame=wrapUdp(p.getAddress(),p.getPort(),Arrays.copyOfRange(p.getData(),p.getOffset(),p.getOffset()+p.getLength()));relay.send(new DatagramPacket(frame,frame.length,ce));}catch(SocketTimeoutException ignored){}catch(Exception e){if(alive.get())emit("SOCKS_ERROR udp_out "+safe(e));break;}}});
         try{while(control.getInputStream().read()!=-1){}}catch(Exception ignored){}finally{alive.set(false);relay.close();outbound.close();}
     }
 
-    private DatagramSocket openOutboundUdp(Network n)throws Exception{
-        DatagramSocket d=new DatagramSocket();
-        if(n!=null){
-            try{n.bindSocket(d);emit("OUTBOUND_UDP_CELLULAR_BIND_OK");return d;}
-            catch(Exception e){emit("OUTBOUND_UDP_CELLULAR_BIND_BLOCKED "+safe(e)+" -> default-route fallback");try{d.close();}catch(Exception ignored){}d=new DatagramSocket();}
-        }else emit("OUTBOUND_UDP_CELLULAR_OBJECT_MISSING -> default-route fallback");
-        return d;
+    private DatagramSocket openOutboundUdp()throws Exception{
+        DatagramSocket d=new DatagramSocket();emit("OUTBOUND_DEFAULT_ROUTE_UDP_OK local="+d.getLocalSocketAddress());return d;
     }
 
     private Target readTarget(InputStream in,int atyp)throws Exception{
@@ -139,14 +122,13 @@ public final class Socks5Server implements Closeable {
         int p=(readU8(in)<<8)|readU8(in);return new Target(a,host,p);
     }
 
-    private UdpFrame parseUdp(byte[] b,int off,int len,Network n)throws Exception{
+    private UdpFrame parseUdp(byte[] b,int off,int len)throws Exception{
         if(len<4||b[off]!=0||b[off+1]!=0||b[off+2]!=0)return null;int pos=off+3,at=b[pos++]&255;InetAddress a;
-        if(at==1){if(pos+6>off+len)return null;a=InetAddress.getByAddress(Arrays.copyOfRange(b,pos,pos+4));pos+=4;}else if(at==4){if(pos+18>off+len)return null;a=InetAddress.getByAddress(Arrays.copyOfRange(b,pos,pos+16));pos+=16;}else if(at==3){int l=b[pos++]&255;if(pos+l+2>off+len)return null;String h=new String(b,pos,l,StandardCharsets.UTF_8);pos+=l;a=resolveHostForUdp(n,h);}else return null;
+        if(at==1){if(pos+6>off+len)return null;a=InetAddress.getByAddress(Arrays.copyOfRange(b,pos,pos+4));pos+=4;}else if(at==4){if(pos+18>off+len)return null;a=InetAddress.getByAddress(Arrays.copyOfRange(b,pos,pos+16));pos+=16;}else if(at==3){int l=b[pos++]&255;if(pos+l+2>off+len)return null;String h=new String(b,pos,l,StandardCharsets.UTF_8);pos+=l;a=resolveHostForUdp(h);}else return null;
         int p=((b[pos++]&255)<<8)|(b[pos++]&255);byte[] data=Arrays.copyOfRange(b,pos,off+len);return new UdpFrame(new InetSocketAddress(a,p),data);
     }
 
-    private InetAddress resolveHostForUdp(Network n,String h)throws Exception{
-        if(n!=null){try{InetAddress[] aa=n.getAllByName(h);if(aa!=null&&aa.length>0)return aa[0];}catch(Exception e){emit("DNS_UDP_CELLULAR_BIND_BLOCKED host="+h+" "+safe(e)+" -> default resolver fallback");}}
+    private InetAddress resolveHostForUdp(String h)throws Exception{
         InetAddress[] aa=InetAddress.getAllByName(h);if(aa==null||aa.length==0)throw new UnknownHostException(h);return aa[0];
     }
 
