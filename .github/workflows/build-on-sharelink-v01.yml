@@ -1,4 +1,4 @@
-name: Build ON ShareLink v0.2 Direct Wi-Fi
+name: Build ON ShareLink v0.3 ONE-TAP
 
 on:
   push:
@@ -51,18 +51,20 @@ jobs:
           test -f libs/arm64-v8a/libhev-socks5-tunnel.so
           mkdir -p "$GITHUB_WORKSPACE/sharelink/client/src/main/jniLibs/arm64-v8a"
           cp libs/arm64-v8a/libhev-socks5-tunnel.so "$GITHUB_WORKSPACE/sharelink/client/src/main/jniLibs/arm64-v8a/"
-      - name: Direct Wi-Fi and routing guards
+      - name: One-tap Wi-Fi and routing guards
         run: |
           set -euxo pipefail
           ! grep -R -i -n 'kha\.prog\.mikrotik\|Proxy-agent: NetShare' sharelink
           grep -q 'TRANSPORT_CELLULAR' sharelink/host/src/main/java/com/onsharelink/host/ShareHostService.java
-          grep -q 'getPassphrase' sharelink/host/src/main/java/com/onsharelink/host/ShareHostService.java
-          grep -q 'wifi_ssid' sharelink/host/src/main/java/com/onsharelink/host/ShareHostService.java
-          grep -q 'setCode' sharelink/host/src/main/java/com/onsharelink/host/Pairing.java
-          grep -q 'ACTION_WIFI_SETTINGS' sharelink/client/src/main/java/com/onsharelink/client/MainActivity.java
-          ! grep -q 'WifiP2pManager' sharelink/client/src/main/java/com/onsharelink/client/ClientLinkService.java
+          grep -q 'DIRECT-ON-ShareLink' sharelink/host/src/main/java/com/onsharelink/host/ShareHostService.java
+          grep -q 'setNetworkName(GROUP_NAME)' sharelink/host/src/main/java/com/onsharelink/host/ShareHostService.java
+          grep -q 'setPassphrase(Pairing.code(this))' sharelink/host/src/main/java/com/onsharelink/host/ShareHostService.java
+          grep -q 'enablePersistentMode(true)' sharelink/host/src/main/java/com/onsharelink/host/ShareHostService.java
+          grep -q 'WifiNetworkSuggestion' sharelink/client/src/main/java/com/onsharelink/client/ClientLinkService.java
+          grep -q 'setWpa2Passphrase(code)' sharelink/client/src/main/java/com/onsharelink/client/ClientLinkService.java
+          grep -q 'setIsInitialAutojoinEnabled(true)' sharelink/client/src/main/java/com/onsharelink/client/ClientLinkService.java
+          ! grep -q 'ACTION_WIFI_SETTINGS' sharelink/client/src/main/java/com/onsharelink/client/MainActivity.java
           grep -q 'getSocketFactory().createSocket' sharelink/client/src/main/java/com/onsharelink/client/ClientLinkService.java
-          grep -q '1,1,1,1' sharelink/client/src/main/java/com/onsharelink/client/ClientLinkService.java
           grep -q 'username: '\''onshare'\''' sharelink/client/src/main/java/com/onsharelink/client/ShareVpnService.java
           if grep -q '0.0.0.0/0' sharelink/client/src/main/java/com/onsharelink/client/PublicRoutes.java; then echo 'Default route would swallow local Roon paths'; exit 1; fi
           grep -q '208.0.0.0/4' sharelink/client/src/main/java/com/onsharelink/client/PublicRoutes.java
@@ -81,8 +83,8 @@ jobs:
           "$ANDROID_HOME/build-tools/35.0.0/zipalign" -c -P 16 -v 4 "$C" > /tmp/client-align.txt
           unzip -t "$H" >/tmp/host-unzip.txt; unzip -t "$C" >/tmp/client-unzip.txt
           mkdir -p out
-          cp "$H" out/ON-ShareLink-S26-Host-v0.2-DIRECT-WIFI.apk
-          cp "$C" out/ON-ShareLink-Client-v0.2-DIRECT-WIFI.apk
+          cp "$H" out/ON-ShareLink-S26-Host-v0.3-ONE-TAP.apk
+          cp "$C" out/ON-ShareLink-Client-v0.3-ONE-TAP.apk
           cp sharelink/README.md out/README.md
           cp sharelink/THIRD_PARTY_NOTICES.md out/THIRD_PARTY_NOTICES.md
           cp /tmp/host-sign.txt out/HOST-SIGNATURE.txt
@@ -90,5 +92,5 @@ jobs:
           sha256sum out/*.apk > out/SHA256SUMS.txt
       - uses: actions/upload-artifact@v4
         with:
-          name: ON-ShareLink-v0.2-DIRECT-WIFI
+          name: ON-ShareLink-v0.3-ONE-TAP
           path: out/
