@@ -1,18 +1,15 @@
-# ON ShareLink v0.2 Direct Wi-Fi
+# ON ShareLink v0.3 ONE-TAP
 
 개인용 S26 ↔ R8/Android 인터넷 공유 프로젝트.
 
-## v0.2 연결 방식
-- S26 Host가 Wi-Fi Direct Group Owner를 생성한다.
-- Host 앱 화면에 실제 `DIRECT-...` Wi-Fi 이름과 Android가 만든 Wi-Fi 비밀번호를 표시한다.
-- R8 II / 다른 Android는 **일반 Wi-Fi 설정 화면에서 그 SSID와 비밀번호로 직접 연결**한다. v0.1의 앱 내부 P2P 자동-connect 방식은 사용하지 않는다.
-- Client 앱은 현재 Wi-Fi의 IPv4 gateway에서 ON ShareLink SOCKS5 서버를 찾고, 사용자 지정 8자리 앱 페어링 코드로 인증한다.
-- 인증 후 S26가 실제 `TRANSPORT_CELLULAR` 경로로 `1.1.1.1:443` TCP 연결을 열 수 있는지 확인한 뒤에만 VPN 터널을 시작한다. 따라서 Wi-Fi가 안 붙었는데 '인터넷 연결됨'으로 표시하지 않는다.
-
-## 앱 페어링 코드
-- S26 Host에서 숫자 8자리를 사용자가 직접 지정할 수 있다.
-- 이 코드는 Wi-Fi 비밀번호와 별개다. Wi-Fi 비밀번호는 Android Wi-Fi Direct가 생성하며 Host 화면에 표시된다.
-- R8/다른 Android Client에 같은 8자리 코드를 입력한다.
+## v0.3 한방 연결 방식
+- S26 Host는 고정 Wi-Fi Direct 그룹 `DIRECT-ON-ShareLink`를 생성한다.
+- 사용자가 S26 Host에서 지정한 **숫자 8자리 연결 코드**를 Wi-Fi Direct WPA2 passphrase와 ShareLink SOCKS5 인증 비밀번호에 같이 사용한다.
+- R8 II / 다른 Android Client에는 같은 8자리 코드만 한 번 입력한다.
+- Android 10+ Client는 `WifiNetworkSuggestion`으로 `DIRECT-ON-ShareLink`를 자동 연결 대상으로 등록한다. Android 보안상 최초 앱 Wi-Fi 제안 허용은 한 번 필요할 수 있으며 이후 auto-join을 사용한다.
+- Client는 실제 Wi-Fi Network에서 S26 gateway의 ON ShareLink SOCKS5 인증과 S26 `TRANSPORT_CELLULAR` outbound 연결을 검증한 뒤에만 VPN을 시작한다.
+- 따라서 앱 표시만 연결되고 실제 Wi-Fi/인터넷이 죽어 있는 v0.1식 false-positive를 허용하지 않는다.
+- 사용자가 Wi-Fi 설정 화면에서 SSID/비밀번호를 매번 수동 입력하는 v0.2 흐름은 제거했다.
 
 ## 네트워크 목표
 - 외부 서버, VPS, 상용 프록시, 하드코딩 공인 IP 없음.
