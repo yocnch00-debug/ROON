@@ -1,0 +1,74 @@
+name: Build R8 Sidecar v2.0 WLAN RAAT Backend
+
+on:
+  push:
+    branches: [ netshare-sidecar-v1 ]
+    paths:
+      - 'android-sidecar/**'
+      - 'tools/patch-r8-v19-stable-tunnel.py'
+      - 'tools/patch-r8-v20-wlan-backend.py'
+      - '.github/workflows/build-r8-v20.yml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'android-sidecar/**'
+      - 'tools/patch-r8-v19-stable-tunnel.py'
+      - 'tools/patch-r8-v20-wlan-backend.py'
+      - '.github/workflows/build-r8-v20.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - name: Install Android SDK 36
+        run: yes | sdkmanager --licenses >/dev/null && sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.13'
+      - name: Restore stable signing key
+        run: base64 -d android-sidecar/onroonlink-test.jks.b64 > android-sidecar/onroonlink-test.jks
+      - name: Apply stable tunnel + WLAN backend patches
+        run: |
+          python3 tools/patch-r8-v19-stable-tunnel.py
+          python3 tools/patch-r8-v20-wlan-backend.py
+      - name: Architecture checks
+        run: |
+          grep -q '2.0-WLAN-RAAT-BACKEND' android-sidecar/app/src/main/java/com/onroonlink/sidecar/BridgeService.java
+          grep -q 'versionName = "2.0-wlan-raat-backend"' android-sidecar/app/build.gradle.kts
+          grep -q 'WLAN-SELF' android-sidecar/app/src/main/java/com/onroonlink/sidecar/BridgeService.java
+          grep -q 's.bind(new InetSocketAddress(backendAddr,0))' android-sidecar/app/src/main/java/com/onroonlink/sidecar/BridgeService.java
+          grep -q 's.connect(new InetSocketAddress(backendAddr,targetPort),5000)' android-sidecar/app/src/main/java/com/onroonlink/sidecar/BridgeService.java
+          if grep -q 'heartbeat timeout' android-sidecar/app/src/main/java/com/onroonlink/sidecar/BridgeService.java; then echo 'False heartbeat timeout returned'; exit 1; fi
+          if grep -q 's.connect(new InetSocketAddress("127.0.0.1",targetPort),5000)' android-sidecar/app/src/main/java/com/onroonlink/sidecar/BridgeService.java; then echo 'Old forced loopback backend remains'; exit 1; fi
+      - name: Build R8 Sidecar v2.0
+        working-directory: android-sidecar
+        run: gradle --no-daemon :app:assembleDebug
+      - name: Verify APK
+        run: |
+          APK=android-sidecar/app/build/outputs/apk/debug/app-debug.apk
+          $ANDROID_HOME/build-tools/36.0.0/apksigner verify --verbose "$APK"
+          $ANDROID_HOME/build-tools/36.0.0/zipalign -c -P 16 -v 4 "$APK"
+      - name: Package
+        run: |
+          mkdir -p out
+          cp android-sidecar/app/build/outputs/apk/debug/app-debug.apk out/ON-Roon-NetShare-R8-Sidecar-v2.0-WLAN-RAAT-BACKEND.apk
+          sha256sum out/ON-Roon-NetShare-R8-Sidecar-v2.0-WLAN-RAAT-BACKEND.apk > out/SHA256.txt
+          printf '%s\n' \
+            'PC Relay v2.5 and S26 Transport v2.0 stay unchanged.' \
+            'R8 RAAT backend sockets now bind/connect through the R8 wlan0 IPv4 address instead of forced 127.0.0.1.' \
+            'Goal: preserve network-peer semantics for HiBy RAAT playback while keeping the existing tunnel/discovery path.' \
+            'R8 log must show WLAN-SELF for successful backend opens.' > out/INSTALL.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ON-Roon-R8-v2.0-WLAN-RAAT-BACKEND
+          path: out/

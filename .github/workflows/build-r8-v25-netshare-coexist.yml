@@ -1,0 +1,179 @@
+name: Build R8 v2.5 NetShare Coexist
+
+on:
+  push:
+    branches: [ r8-v25-netshare-coexist-20260821 ]
+    paths:
+      - 'tools/r8v24-source.b64.part*'
+      - 'tools/patch-r8-v25-netshare-coexist.py'
+      - '.github/workflows/build-r8-v25-netshare-coexist.yml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'tools/r8v24-source.b64.part*'
+      - 'tools/patch-r8-v25-netshare-coexist.py'
+      - '.github/workflows/build-r8-v25-netshare-coexist.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - name: Install Android SDK 36
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.13'
+
+      - name: Reconstruct reviewed v2.4 source
+        run: |
+          set -euxo pipefail
+          cat tools/r8v24-source.b64.part01 tools/r8v24-source.b64.part02 tools/r8v24-source.b64.part03 tools/r8v24-source.b64.part04 tools/r8v24-source.b64.part05 > /tmp/r8-v24-source.b64
+          base64 -d /tmp/r8-v24-source.b64 > /tmp/r8-v24-source.zip
+          echo '0acf5fc2b68abe77be3e1eadb5e8d56260c3baee7b2503aa2233091f94795293  /tmp/r8-v24-source.zip' | sha256sum -c -
+          unzip -t /tmp/r8-v24-source.zip
+          mkdir work-r8
+          unzip -q /tmp/r8-v24-source.zip -d work-r8
+          base64 -d android-sidecar/onroonlink-test.jks.b64 > work-r8/r8-v24/onroonlink-test.jks
+
+      - name: Reapply verified v2.4 compile-safe session ownership fix
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('work-r8/r8-v24/app/src/main/java/com/onroonlink/sidecar/BridgeService.java')
+          s=p.read_text(encoding='utf-8')
+          old='''        s.setTcpNoDelay(true);s.setKeepAlive(true);s.setSoTimeout(0);
+                  status("PROXY","OK","S26 Gateway 연결 → "+GATEWAY_HOST+":"+GATEWAY_PORT);
+
+                  TunnelMux tm=new TunnelMux(s);
+                  long epoch;
+                  synchronized(tunnelLock){
+                      epoch=tunnelEpoch.incrementAndGet();
+                      tunnelSocket=s;
+                      mux=tm;
+                  }
+                  diag("SESSION_CONNECTED",session,epoch,"afterMs="+(SystemClock.elapsedRealtime()-started)+" local="+s.getLocalSocketAddress()+" remote="+s.getRemoteSocketAddress()+" route="+routeLabel(route));
+                  AtomicLong lastInboundAt=new AtomicLong(SystemClock.uptimeMillis());
+                  AtomicBoolean pongSeen=new AtomicBoolean(false);
+                  AtomicBoolean routeValidationPending=new AtomicBoolean(false);
+                  tm.sendText(TunnelMux.HELLO,0,"R8II|ON-SIDECAR|2.4-DIAGNOSTIC-STABLE");
+                  ConnectivityManager.NetworkCallback watcher=watchWifiRoute(session,epoch,tm,s,route,routeValidationPending);
+                  try{
+                      workers.execute(()->heartbeatLoop(session,epoch,tm,s,route,routeValidationPending));
+                      workers.execute(()->silentRecoveryLoop(session,epoch,tm,s,lastInboundAt,pongSeen));
+          '''
+          new='''        s.setTcpNoDelay(true);s.setKeepAlive(true);s.setSoTimeout(0);
+                  final Socket sessionSocket=s;
+                  status("PROXY","OK","S26 Gateway 연결 → "+GATEWAY_HOST+":"+GATEWAY_PORT);
+
+                  TunnelMux tm=new TunnelMux(sessionSocket);
+                  long epoch;
+                  synchronized(tunnelLock){
+                      epoch=tunnelEpoch.incrementAndGet();
+                      tunnelSocket=sessionSocket;
+                      mux=tm;
+                  }
+                  diag("SESSION_CONNECTED",session,epoch,"afterMs="+(SystemClock.elapsedRealtime()-started)+" local="+sessionSocket.getLocalSocketAddress()+" remote="+sessionSocket.getRemoteSocketAddress()+" route="+routeLabel(route));
+                  AtomicLong lastInboundAt=new AtomicLong(SystemClock.uptimeMillis());
+                  AtomicBoolean pongSeen=new AtomicBoolean(false);
+                  AtomicBoolean routeValidationPending=new AtomicBoolean(false);
+                  tm.sendText(TunnelMux.HELLO,0,"R8II|ON-SIDECAR|2.4-DIAGNOSTIC-STABLE");
+                  ConnectivityManager.NetworkCallback watcher=watchWifiRoute(session,epoch,tm,sessionSocket,route,routeValidationPending);
+                  try{
+                      workers.execute(()->heartbeatLoop(session,epoch,tm,sessionSocket,route,routeValidationPending));
+                      workers.execute(()->silentRecoveryLoop(session,epoch,tm,sessionSocket,lastInboundAt,pongSeen));
+          '''
+          if old not in s: raise SystemExit('v2.4 session ownership anchor not found')
+          p.write_text(s.replace(old,new,1),encoding='utf-8')
+          PY
+
+      - name: Apply v2.5 NetShare coexist patch
+        run: python3 tools/patch-r8-v25-netshare-coexist.py
+
+      - name: Protected-path and regression guards
+        run: |
+          set -euxo pipefail
+          ROOT=work-r8/r8-v24
+          echo '6f2afc68dbd660317c44f6cfe082bb254f2ea5f5e08dd59f107d11ebfe4c1800  '"$ROOT"'/app/src/main/java/com/onroonlink/sidecar/TunnelMux.java' | sha256sum -c -
+          echo '36e17341da1605d613c71a330435c64bb9f244f8abe435f2c35c6156ef73816e  '"$ROOT"'/app/src/main/java/com/onroonlink/sidecar/SoodCodec.java' | sha256sum -c -
+          echo 'd738c7035f3f09e2350fdd4fcd413c4684a52acdde604b1be5793ad253edd8b7  '"$ROOT"'/app/src/main/java/com/onroonlink/sidecar/LocalSoodInjector.java' | sha256sum -c -
+          echo 'a996c9941a4e8ea81fd7b4a3e9261fee4d806dfd931cb5bf734ca94e2284ff92  '"$ROOT"'/app/src/main/AndroidManifest.xml' | sha256sum -c -
+          echo '255c3c9777837d205fe813dd7c5754d0ea2ded9421ab97f47bea4afb87042bbf  '"$ROOT"'/app/src/main/res/values/styles.xml' | sha256sum -c -
+
+          grep -q 'versionCode = 15' "$ROOT/app/build.gradle.kts"
+          grep -q 'versionName = "2.5-netshare-coexist"' "$ROOT/app/build.gradle.kts"
+          grep -q '2.5-NETSHARE-COEXIST' "$ROOT/app/src/main/java/com/onroonlink/sidecar/BridgeService.java"
+          grep -q 'final Socket sessionSocket=s' "$ROOT/app/src/main/java/com/onroonlink/sidecar/BridgeService.java"
+          grep -q 'connectOnWifiNetwork(route,GATEWAY_HOST,GATEWAY_PORT,5000)' "$ROOT/app/src/main/java/com/onroonlink/sidecar/BridgeService.java"
+          grep -q 'route.network.getSocketFactory().createSocket()' "$ROOT/app/src/main/java/com/onroonlink/sidecar/BridgeService.java"
+          grep -q 'physical Wi-Fi bind mismatch' "$ROOT/app/src/main/java/com/onroonlink/sidecar/BridgeService.java"
+          grep -q 'SOOD_CACHE_UPDATE' "$ROOT/app/src/main/java/com/onroonlink/sidecar/BridgeService.java"
+          grep -q 'SOOD_CACHE_FALLBACK' "$ROOT/app/src/main/java/com/onroonlink/sidecar/BridgeService.java"
+          grep -q 'SOOD_CACHE_INVALIDATED' "$ROOT/app/src/main/java/com/onroonlink/sidecar/BridgeService.java"
+          grep -q 'ROUTE_CONFIRM_MS=1800L' "$ROOT/app/src/main/java/com/onroonlink/sidecar/BridgeService.java"
+          grep -q 'ROUTE_TRANSIENT_IGNORED' "$ROOT/app/src/main/java/com/onroonlink/sidecar/BridgeService.java"
+          grep -q 'AUX_UDP_TO_R8=40' "$ROOT/app/src/main/java/com/onroonlink/sidecar/TunnelMux.java"
+          grep -q 'AUX_UDP_FROM_R8=41' "$ROOT/app/src/main/java/com/onroonlink/sidecar/TunnelMux.java"
+          grep -q 'WLAN-SELF' "$ROOT/app/src/main/java/com/onroonlink/sidecar/BridgeService.java"
+          grep -q 'roonbridge-v2.5.log' "$ROOT/app/src/main/java/com/onroonlink/sidecar/MainActivity.java"
+          if grep -q 'connectWithoutNetworkBind' "$ROOT/app/src/main/java/com/onroonlink/sidecar/BridgeService.java"; then echo 'Unbound gateway path regressed'; exit 1; fi
+          if grep -q 'android.net.VpnService' "$ROOT/app/src/main/AndroidManifest.xml"; then echo 'Unexpected VpnService regression'; exit 1; fi
+
+      - name: Build release APK
+        working-directory: work-r8/r8-v24
+        run: gradle --no-daemon :app:assembleRelease
+
+      - name: Verify package and produce artifact
+        run: |
+          set -euxo pipefail
+          ROOT=work-r8/r8-v24
+          APK="$ROOT/app/build/outputs/apk/release/app-release.apk"
+          if [ ! -f "$APK" ]; then APK="$ROOT/app/build/outputs/apk/release/app-release-unsigned.apk"; fi
+          test -f "$APK"
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose --print-certs "$APK" > /tmp/apksigner.txt
+          "$ANDROID_HOME/build-tools/36.0.0/zipalign" -c -P 16 -v 4 "$APK" > /tmp/zipalign.txt
+          unzip -t "$APK" > /tmp/unzip-test.txt
+          mkdir -p out
+          cp "$APK" out/ON-Roon-NetShare-R8-Sidecar-v2.5-NETSHARE-COEXIST.apk
+          (cd work-r8 && zip -qr /tmp/R8-v2.5-source.zip r8-v24 -x 'r8-v24/onroonlink-test.jks' 'r8-v24/app/build/*' 'r8-v24/.gradle/*')
+          cp /tmp/R8-v2.5-source.zip out/R8-v2.5-source.zip
+          cp /tmp/apksigner.txt out/APKSIGNER.txt
+          cp /tmp/zipalign.txt out/ZIPALIGN.txt
+          cp /tmp/unzip-test.txt out/UNZIP-TEST.txt
+          sha256sum out/ON-Roon-NetShare-R8-Sidecar-v2.5-NETSHARE-COEXIST.apk out/R8-v2.5-source.zip > out/SHA256.txt
+          cat > out/README.txt <<'TXT'
+          R8 v2.5 NETSHARE COEXIST
+
+          Evidence-driven fix for the 2026-08-21 R8 log where NetShare activation moved the S26 gateway socket from wlan0 192.168.49.149 to tun0 10.10.49.149 and HiBy discovery stopped responding.
+
+          Changes only on R8:
+          - S26 192.168.49.1:51921 is created from Android's physical Wi-Fi Network socket factory and explicitly source-bound to the wlan0 IPv4 address.
+          - The old unbound/default-route gateway attempt is removed, so NetShare cannot silently capture a successful gateway socket via tun0.
+          - Last real HiBy Roon Ready SOOD response is cached in memory. If HiBy discovery temporarily stops after NetShare changes Android's default network, the sidecar regenerates the current transaction id and returns the cached endpoint.
+          - Cache is memory-only, expires, is service-id matched, and is invalidated after repeated failures to connect to its cached primary tcp_port.
+          - Existing 1.8s route confirmation, stale-session ownership, RAAT AUX TCP/UDP, WLAN-self backend, SOOD codec and USB/audio path are retained.
+
+          NOT changed:
+          - PC
+          - S26
+          - NetShare
+          - TunnelMux framing
+          - RAAT AUX TCP/UDP protocol
+          - HiBy Roon Ready APK
+          - USB/Tamra audio path
+          TXT
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ON-Roon-R8-v2.5-NETSHARE-COEXIST
+          path: out/

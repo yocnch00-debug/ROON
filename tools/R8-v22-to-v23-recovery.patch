@@ -1,0 +1,15 @@
+diff --git a/work/vnext/clean-source/r8-v22/app/build.gradle.kts b/work/vnext/final-clean-source-20260821-1215/r8-v23/app/build.gradle.kts
+index 9effe23..292b4f5 100644
+--- a/work/vnext/clean-source/r8-v22/app/build.gradle.kts
++++ b/work/vnext/final-clean-source-20260821-1215/r8-v23/app/build.gradle.kts
+@@ -8,8 +8,8 @@ android {
+         applicationId = "com.onroonlink.sidecar"
+         minSdk = 26
+         targetSdk = 36
+-        versionCode = 12
+-        versionName = "2.2-lifecycle-stability"
++        versionCode = 13
++        versionName = "2.3-network-recovery"
+     }
+ 
+     signingConfigs {

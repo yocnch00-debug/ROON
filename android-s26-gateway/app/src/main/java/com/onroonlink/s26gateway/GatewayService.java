@@ -1,0 +1,295 @@
+package com.onroonlink.s26gateway;
+
+import android.app.*;
+import android.content.*;
+import android.net.*;
+import android.os.*;
+import java.io.*;
+import java.net.*;
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicLong;
+
+public class GatewayService extends Service {
+    public static final String ACTION_STATUS="com.onroonlink.s26gateway.STATUS";
+    private static final String CHANNEL="on_roon_s26_gateway";
+    private static final int LISTEN_PORT=51921;
+    private static final String DEFAULT_PC_HOST="121.133.225.83";
+    private static final int DEFAULT_PC_PORT=51920;
+    private static final String PC_LAN="192.168.50.84";
+    private static final String PC_LAN_PREFIX="192.168.50.";
+    private static final String PHONE_VPN_PC="10.88.10.1";
+    private static final String PHONE_VPN_LOCAL_PREFIX="192.0.0.";
+
+    private final ExecutorService workers=Executors.newCachedThreadPool();
+    private final AtomicLong connectionSeq=new AtomicLong();
+    private volatile boolean running=true;
+    private volatile long activeSeq=0L;
+    private volatile ServerSocket server;
+    private volatile Socket currentR8;
+    private volatile Socket currentPc;
+
+    @Override public void onCreate(){
+        super.onCreate();
+        createChannel();
+        startForeground(1207,notification("R8 ↔ PC transport 시작"));
+        workers.execute(this::serverLoop);
+    }
+
+    @Override public int onStartCommand(Intent intent,int flags,int startId){return START_STICKY;}
+    @Override public IBinder onBind(Intent intent){return null;}
+
+    @Override public void onDestroy(){
+        running=false;
+        activeSeq=connectionSeq.incrementAndGet();
+        closeQuiet(currentR8);closeQuiet(currentPc);closeQuiet(server);
+        workers.shutdownNow();
+        super.onDestroy();
+    }
+
+    private void serverLoop(){
+        status("APP","OK","TRANSPORT ONLY · 외부망 DIRECT 물리망 우선 · PHONE VPN 유지 · Roon/SOOD 처리 없음");
+        while(running){
+            try{
+                ServerSocket ss=new ServerSocket();
+                ss.setReuseAddress(true);
+                ss.bind(new InetSocketAddress("0.0.0.0",LISTEN_PORT));
+                server=ss;
+                status("LISTEN","OK","0.0.0.0:"+LISTEN_PORT+" · R8 대기");
+                status("PC","WAIT","R8 연결 시 PC Relay 접속");
+                while(running){
+                    Socket r8=ss.accept();
+                    r8.setTcpNoDelay(true);r8.setKeepAlive(true);
+                    long seq=connectionSeq.incrementAndGet();activeSeq=seq;
+                    Socket oldR8=currentR8,oldPc=currentPc;
+                    currentR8=r8;currentPc=null;
+                    closeQuiet(oldR8);closeQuiet(oldPc);
+                    status("R8","OK",r8.getInetAddress().getHostAddress()+":"+r8.getPort()+" · session "+seq);
+                    log("R8 접속 #"+seq+" → "+r8.getRemoteSocketAddress());
+                    workers.execute(()->bridgeOne(seq,r8));
+                }
+            }catch(Throwable t){if(running)log("listener 재시작: "+shortErr(t));}
+            finally{closeQuiet(server);server=null;}
+            sleep(700);
+        }
+    }
+
+    private boolean isActive(long seq,Socket r8){
+        return running&&activeSeq==seq&&currentR8==r8&&!r8.isClosed();
+    }
+
+    private void bridgeOne(long seq,Socket r8){
+        Socket pc=null;
+        try{
+            PcConnection c=connectPc();pc=c.socket;
+            if(!isActive(seq,r8)){closeQuiet(pc);return;}
+            currentPc=pc;
+            status("PC","OK",c.label+" · session "+seq);
+            status("R8","OK",r8.getInetAddress().getHostAddress()+":"+r8.getPort()+" · PC 중계 연결됨");
+            ((NotificationManager)getSystemService(NOTIFICATION_SERVICE)).notify(1207,notification("R8 ↔ PC Relay 연결됨"));
+            log("중계 시작 #"+seq+" · "+c.label);
+            Socket pf=pc;
+            Future<?> a=workers.submit(()->pump(seq,r8,pf,"R8→PC"));
+            Future<?> b=workers.submit(()->pump(seq,pf,r8,"PC→R8"));
+            try{a.get();}catch(Throwable ignored){}
+            closeQuiet(r8);closeQuiet(pc);
+            try{b.get(1200,TimeUnit.MILLISECONDS);}catch(Throwable ignored){}
+        }catch(Throwable t){
+            if(isActive(seq,r8)){
+                status("PC","WAIT","PC Relay 연결 실패: "+shortErr(t));
+                log("PC Relay 연결 실패 #"+seq+": "+shortErr(t));
+            }
+        }finally{
+            closeQuiet(r8);closeQuiet(pc);
+            if(currentR8==r8)currentR8=null;
+            if(currentPc==pc)currentPc=null;
+            if(running&&activeSeq==seq){
+                status("R8","WAIT","R8 재연결 대기");
+                status("PC","WAIT","R8 연결 시 PC Relay 접속");
+            }
+        }
+    }
+
+    private PcConnection connectPc()throws IOException{
+        SharedPreferences sp=getSharedPreferences("gateway",MODE_PRIVATE);
+        String publicHost=sp.getString("pc_host",DEFAULT_PC_HOST);
+        if(publicHost==null||publicHost.trim().isEmpty())publicHost=DEFAULT_PC_HOST;
+        publicHost=publicHost.trim();
+        int publicPort=sp.getInt("pc_port",DEFAULT_PC_PORT);
+        if(publicPort<1||publicPort>65535)publicPort=DEFAULT_PC_PORT;
+        IOException last=null;
+        boolean onPcLan=hasAddressPrefix(PC_LAN_PREFIX);
+        boolean phoneVpnSeen=hasAddressPrefix(PHONE_VPN_LOCAL_PREFIX);
+
+        log("경로판정 · PC_LAN="+onPcLan+" · PHONE_VPN="+phoneVpnSeen);
+
+        if(onPcLan){
+            // Keep the exact home path that already played successfully.
+            try{return connectPlain(PC_LAN,DEFAULT_PC_PORT,"PC LAN",1800);}
+            catch(IOException e){last=e;log("LAN 경로 실패: "+shortErr(e));}
+
+            // If home LAN is unavailable, still prefer a physical network-bound public socket.
+            try{return connectPhysical(publicHost,publicPort,3500);}
+            catch(IOException e){last=e;log("DIRECT 물리망 실패: "+shortErr(e));}
+
+            try{return connectPlain(publicHost,publicPort,"PUBLIC DEFAULT",4200);}
+            catch(IOException e){last=e;log("PUBLIC 기본경로 실패: "+shortErr(e));}
+        }else{
+            // External/mobile: the long-lived R8 mux must NOT ride inside PHONE VPN.
+            // Bind this socket explicitly to a validated non-VPN physical Network.
+            try{return connectPhysical(publicHost,publicPort,4200);}
+            catch(IOException e){last=e;log("DIRECT 물리망 실패: "+shortErr(e));}
+
+            // Safety fallback only. This may route through PHONE VPN and can be unstable,
+            // but retains a last-resort path instead of failing immediately.
+            try{return connectPlain(publicHost,publicPort,"PUBLIC VPN-FALLBACK",4200);}
+            catch(IOException e){last=e;log("PUBLIC VPN fallback 실패: "+shortErr(e));}
+
+            // Legacy internal probe is last because it is not reachable on every PHONE build.
+            try{return connectPlain(PHONE_VPN_PC,DEFAULT_PC_PORT,"PHONE VPN INTERNAL-LAST",2200);}
+            catch(IOException e){last=e;log("PHONE VPN 내부경로 실패: "+shortErr(e));}
+        }
+        throw new IOException("PC Relay 경로 없음",last);
+    }
+
+    private PcConnection connectPhysical(String host,int port,int timeoutMs)throws IOException{
+        ConnectivityManager cm=(ConnectivityManager)getSystemService(CONNECTIVITY_SERVICE);
+        if(cm==null)throw new IOException("ConnectivityManager 없음");
+        ArrayList<PhysicalCandidate> candidates=new ArrayList<>();
+        try{
+            for(Network n:cm.getAllNetworks()){
+                NetworkCapabilities nc=cm.getNetworkCapabilities(n);
+                if(nc==null)continue;
+                if(nc.hasTransport(NetworkCapabilities.TRANSPORT_VPN))continue;
+                if(!nc.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET))continue;
+                LinkProperties lp=cm.getLinkProperties(n);
+                String ipv4=firstIpv4(lp);
+                if(ipv4==null)continue;
+                int score=0;
+                String kind="PHYSICAL";
+                if(nc.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)){score+=300;kind="CELLULAR";}
+                else if(nc.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)){score+=200;kind="WIFI";}
+                else if(nc.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)){score+=100;kind="ETHERNET";}
+                if(nc.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED))score+=50;
+                if(nc.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_RESTRICTED))score+=10;
+                candidates.add(new PhysicalCandidate(n,kind,ipv4,score));
+            }
+        }catch(Throwable t){throw new IOException("물리망 탐색 실패: "+shortErr(t),t);}
+        if(candidates.isEmpty())throw new IOException("사용 가능한 non-VPN 물리망 없음");
+        candidates.sort((a,b)->Integer.compare(b.score,a.score));
+
+        IOException last=null;
+        for(PhysicalCandidate c:candidates){
+            Socket s=new Socket();
+            try{
+                log("PC Relay DIRECT 시도 → "+host+":"+port+" ["+c.kind+" / "+c.ipv4+"]");
+                c.network.bindSocket(s);
+                s.connect(new InetSocketAddress(host,port),timeoutMs);
+                s.setTcpNoDelay(true);s.setKeepAlive(true);
+                String label=host+":"+port+" · DIRECT "+c.kind;
+                log("PC Relay DIRECT 성공 → "+label+" · local="+s.getLocalSocketAddress());
+                return new PcConnection(s,label);
+            }catch(IOException e){
+                last=e;log("DIRECT "+c.kind+" 실패: "+shortErr(e));closeQuiet(s);
+            }catch(Throwable t){
+                last=new IOException(shortErr(t),t);log("DIRECT "+c.kind+" 실패: "+shortErr(t));closeQuiet(s);
+            }
+        }
+        throw new IOException("non-VPN 물리망 direct 실패",last);
+    }
+
+    private static String firstIpv4(LinkProperties lp){
+        if(lp==null)return null;
+        for(LinkAddress la:lp.getLinkAddresses()){
+            InetAddress a=la.getAddress();
+            if(a instanceof Inet4Address&&!a.isLoopbackAddress())return a.getHostAddress();
+        }
+        return null;
+    }
+
+    private PcConnection connectPlain(String host,int port,String via,int timeoutMs)throws IOException{
+        Socket s=new Socket();
+        try{
+            log("PC Relay 접속 시도 → "+host+":"+port+" ["+via+"]");
+            s.connect(new InetSocketAddress(host,port),timeoutMs);
+            s.setTcpNoDelay(true);s.setKeepAlive(true);
+            String label=host+":"+port+" · "+via;
+            log("PC Relay 접속 성공 → "+label+" · local="+s.getLocalSocketAddress());
+            return new PcConnection(s,label);
+        }catch(IOException e){closeQuiet(s);throw e;}
+    }
+
+    private boolean hasAddressPrefix(String prefix){
+        try{
+            Enumeration<NetworkInterface> en=NetworkInterface.getNetworkInterfaces();
+            while(en!=null&&en.hasMoreElements()){
+                NetworkInterface ni=en.nextElement();
+                try{if(!ni.isUp()||ni.isLoopback())continue;}catch(Throwable t){continue;}
+                Enumeration<InetAddress> ae=ni.getInetAddresses();
+                while(ae.hasMoreElements()){
+                    InetAddress a=ae.nextElement();
+                    if(a instanceof Inet4Address&&a.getHostAddress().startsWith(prefix))return true;
+                }
+            }
+        }catch(Throwable ignored){}
+        return false;
+    }
+
+    private void pump(long seq,Socket from,Socket to,String name){
+        byte[] buf=new byte[32768];
+        try{
+            InputStream in=from.getInputStream();OutputStream out=to.getOutputStream();
+            int n;
+            while(running&&activeSeq==seq&&(n=in.read(buf))>=0){
+                if(n==0)continue;
+                out.write(buf,0,n);out.flush();
+            }
+            if(running&&activeSeq==seq)log(name+" EOF");
+        }catch(Throwable t){
+            if(running&&activeSeq==seq)
+                log(name+" 종료: "+shortErr(t)+" · fromLocal="+safeLocal(from)+" · fromRemote="+safeRemote(from)+" · toRemote="+safeRemote(to));
+        }finally{closeQuiet(from);closeQuiet(to);}
+    }
+
+    private static String safeLocal(Socket s){try{return String.valueOf(s.getLocalSocketAddress());}catch(Throwable t){return"?";}}
+    private static String safeRemote(Socket s){try{return String.valueOf(s.getRemoteSocketAddress());}catch(Throwable t){return"?";}}
+
+    private void status(String key,String state,String detail){
+        Intent i=new Intent(ACTION_STATUS);i.setPackage(getPackageName());
+        i.putExtra("key",key);i.putExtra("state",state);i.putExtra("detail",detail);sendBroadcast(i);
+    }
+    private void log(String s){status("LOG","",s);}
+
+    private Notification notification(String text){
+        Intent it=new Intent(this,MainActivity.class);
+        PendingIntent pi=PendingIntent.getActivity(this,0,it,PendingIntent.FLAG_UPDATE_CURRENT|PendingIntent.FLAG_IMMUTABLE);
+        return new Notification.Builder(this,CHANNEL)
+                .setSmallIcon(android.R.drawable.stat_sys_upload_done)
+                .setContentTitle("ON Roon S26 Transport")
+                .setContentText(text).setContentIntent(pi).setOngoing(true).build();
+    }
+    private void createChannel(){
+        if(Build.VERSION.SDK_INT>=26){
+            NotificationChannel c=new NotificationChannel(CHANNEL,"ON Roon Transport",NotificationManager.IMPORTANCE_LOW);
+            ((NotificationManager)getSystemService(NOTIFICATION_SERVICE)).createNotificationChannel(c);
+        }
+    }
+
+    private static void closeQuiet(Object o){
+        if(o==null)return;
+        try{if(o instanceof Closeable)((Closeable)o).close();}catch(Throwable ignored){}
+    }
+    private static String shortErr(Throwable t){
+        String m=t==null?"?":t.getMessage();if(m==null||m.isEmpty())m=t.getClass().getSimpleName();return m;
+    }
+    private static void sleep(long ms){try{Thread.sleep(ms);}catch(InterruptedException e){Thread.currentThread().interrupt();}}
+
+    private static class PcConnection{
+        final Socket socket;final String label;
+        PcConnection(Socket s,String l){socket=s;label=l;}
+    }
+    private static class PhysicalCandidate{
+        final Network network;final String kind;final String ipv4;final int score;
+        PhysicalCandidate(Network n,String k,String ip,int s){network=n;kind=k;ipv4=ip;score=s;}
+    }
+}
