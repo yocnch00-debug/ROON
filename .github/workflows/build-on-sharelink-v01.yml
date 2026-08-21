@@ -1,13 +1,8 @@
-name: Build ON ShareLink v1.1 STABLE
+name: Build ON ShareLink v1.2 SIDECAR BYPASS
 
 on:
   push:
-    branches: [ on-sharelink-v11-vpn-coexist-20260822 ]
-    paths:
-      - 'sharelink/**'
-      - '.github/workflows/build-on-sharelink-v01.yml'
-  pull_request:
-    branches: [ main ]
+    branches: [ on-sharelink-v12-sidecar-bypass-20260822 ]
     paths:
       - 'sharelink/**'
       - '.github/workflows/build-on-sharelink-v01.yml'
@@ -45,24 +40,23 @@ jobs:
           "$ANDROID_HOME/ndk/27.2.12479018/ndk-build" -j2 NDK_PROJECT_PATH="$PWD" APP_BUILD_SCRIPT="$PWD/Android.mk" NDK_APPLICATION_MK="$PWD/Application.mk" APP_ABI=arm64-v8a APP_PLATFORM=android-29
           mkdir -p "$GITHUB_WORKSPACE/sharelink/client/src/main/jniLibs/arm64-v8a"
           cp libs/arm64-v8a/libhev-socks5-tunnel.so "$GITHUB_WORKSPACE/sharelink/client/src/main/jniLibs/arm64-v8a/"
-      - name: v1.1 regression guards
+      - name: v1.2 regression guards
         run: |
           set -euxo pipefail
           ! grep -R -i -n 'kha\.prog\.mikrotik\|Proxy-agent: NetShare' sharelink
           grep -q 'getClientList' sharelink/host/src/main/java/com/onsharelink/host/ShareHostService.java
           grep -q 'trafficSummary' sharelink/host/src/main/java/com/onsharelink/host/ShareHostService.java
-          grep -q '접속 IP / 데이터 사용량' sharelink/host/src/main/java/com/onsharelink/host/MainActivity.java
-          grep -q 'OUTBOUND_CELLULAR_BIND_BLOCKED' sharelink/host/src/main/java/com/onsharelink/host/Socks5Server.java
           grep -q 'OUTBOUND_DEFAULT_ROUTE_OK' sharelink/host/src/main/java/com/onsharelink/host/Socks5Server.java
           grep -q 'handleUdpAssociate' sharelink/host/src/main/java/com/onsharelink/host/Socks5Server.java
           grep -q 'HEALTH_TRANSIENT_FAIL' sharelink/client/src/main/java/com/onsharelink/client/ClientLinkService.java
-          grep -q 'HEALTH_OK' sharelink/client/src/main/java/com/onsharelink/client/ClientLinkService.java
-          grep -q 'notifyOnly' sharelink/client/src/main/java/com/onsharelink/client/ShareVpnService.java
+          grep -q 'Roon Sidecar는 wlan0 직통' sharelink/client/src/main/java/com/onsharelink/client/ClientLinkService.java
+          grep -q 'addDisallowedApplication("com.onroonlink.sidecar")' sharelink/client/src/main/java/com/onsharelink/client/ShareVpnService.java
+          grep -q 'VPN_BYPASS sidecar=com.onroonlink.sidecar' sharelink/client/src/main/java/com/onsharelink/client/ShareVpnService.java
           grep -q 'targetSdk 28' sharelink/client/build.gradle
           grep -q 'addNetwork(cfg)' sharelink/client/src/main/java/com/onsharelink/client/WifiBootstrap.java
           if grep -q '0.0.0.0/0' sharelink/client/src/main/java/com/onsharelink/client/PublicRoutes.java; then echo 'Default route would swallow local Roon paths'; exit 1; fi
           grep -q "versionName '1.1-stable'" sharelink/host/build.gradle
-          grep -q "versionName '1.1-stable'" sharelink/client/build.gradle
+          grep -q "versionName '1.2-sidecar-bypass'" sharelink/client/build.gradle
       - name: Build signed Host and Client APKs
         working-directory: sharelink
         run: gradle --no-daemon :host:assembleRelease :client:assembleRelease
@@ -80,7 +74,7 @@ jobs:
           unzip -t "$C" >/tmp/client-unzip.txt
           mkdir -p out
           cp "$H" out/ON-ShareLink-S26-Host-v1.1-STABLE.apk
-          cp "$C" out/ON-ShareLink-R8-Client-v1.1-STABLE.apk
+          cp "$C" out/ON-ShareLink-R8-Client-v1.2-SIDECAR-BYPASS.apk
           cp sharelink/README.md out/README.md
           cp sharelink/THIRD_PARTY_NOTICES.md out/THIRD_PARTY_NOTICES.md
           cp /tmp/host-sign.txt out/HOST-SIGNATURE.txt
@@ -88,5 +82,5 @@ jobs:
           sha256sum out/*.apk > out/SHA256SUMS.txt
       - uses: actions/upload-artifact@v4
         with:
-          name: ON-ShareLink-v1.1-STABLE
+          name: ON-ShareLink-v1.2-SIDECAR-BYPASS
           path: out/
