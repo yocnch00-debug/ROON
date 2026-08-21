@@ -4,7 +4,6 @@ import android.app.*;
 import android.content.*;
 import android.net.*;
 import android.net.VpnService;
-import android.net.wifi.*;
 import android.os.*;
 import java.io.*;
 import java.net.*;
@@ -25,6 +24,9 @@ public class ClientLinkService extends Service {
     private ConnectivityManager.NetworkCallback wifiCallback;
     private int misses;
     private long lastReconnectAttempt;
+    private boolean healthy;
+    private String healthyHost;
+    private String lastStatus="";
 
     @Override public void onCreate(){
         super.onCreate();cm=(ConnectivityManager)getSystemService(CONNECTIVITY_SERVICE);foreground("ShareLink 저장 Wi-Fi 확인중");registerWifiCallback();Diag.log(this,"LINK_SERVICE_CREATE sdk="+Build.VERSION.SDK_INT);
@@ -33,7 +35,7 @@ public class ClientLinkService extends Service {
     @Override public int onStartCommand(Intent i,int f,int id){
         getSharedPreferences("sharelink",0).edit().putBoolean("enabled",true).apply();
         WifiBootstrap.reconnectSaved(this,SHARE_SSID);
-        status("1/4 ShareLink Wi-Fi 연결 대기 · "+SHARE_SSID);schedule(150);return START_STICKY;
+        if(!healthy)status("1/4 ShareLink Wi-Fi 연결 대기 · "+SHARE_SSID);schedule(150);return START_STICKY;
     }
 
     private void registerWifiCallback(){
@@ -52,6 +54,7 @@ public class ClientLinkService extends Service {
         startForeground(5201,new Notification.Builder(this,Build.VERSION.SDK_INT>=26?"sharelink_client":null).setSmallIcon(android.R.drawable.stat_sys_download).setContentTitle("ON ShareLink Client").setContentText(t).setOngoing(true).build());
     }
     private void status(String s){
+        if(s==null||s.equals(lastStatus))return;lastStatus=s;
         Diag.log(this,s);sendBroadcast(new Intent(ACTION_STATUS).setPackage(getPackageName()).putExtra("text",s));NotificationManager nm=(NotificationManager)getSystemService(NOTIFICATION_SERVICE);
         nm.notify(5201,new Notification.Builder(this,Build.VERSION.SDK_INT>=26?"sharelink_client":null).setSmallIcon(android.R.drawable.stat_sys_download).setContentTitle("ON ShareLink Client").setContentText(s).setOngoing(true).build());
     }
@@ -65,13 +68,14 @@ public class ClientLinkService extends Service {
         final String code=getSharedPreferences("sharelink",0).getString("pairing_code","");
         final List<Candidate> candidates=findShareWifiCandidates();
         if(candidates.isEmpty()){
-            probing.set(false);stopService(new Intent(this,ShareVpnService.class));
+            probing.set(false);healthy=false;healthyHost=null;misses=0;stopService(new Intent(this,ShareVpnService.class));
             long now=SystemClock.elapsedRealtime();
             if(now-lastReconnectAttempt>=6000){lastReconnectAttempt=now;WifiBootstrap.reconnectSaved(this,SHARE_SSID);}
             status("1/4 ShareLink Wi-Fi 연결 대기 · 저장망 자동 재접속 중");schedule(1200);return;
         }
 
-        status("2/4 ShareLink Wi-Fi 연결됨 · S26 서버 확인중");
+        if(!healthy)status("2/4 ShareLink Wi-Fi 연결됨 · S26 서버 확인중");
+        else Diag.log(this,"HEALTH_PROBE_BEGIN host="+healthyHost);
         io.execute(()->{
             ProbeHit hit=null;ProbeResult best=ProbeResult.NO_HOST;
             for(Candidate c:candidates){
@@ -84,7 +88,7 @@ public class ClientLinkService extends Service {
                 probing.set(false);
                 if(fh!=null)handleSuccess(fh.host);
                 else if(fb==ProbeResult.BAD_CODE)handleFailure("2/4 Wi-Fi 연결됨 · S26과 8자리 코드가 다름");
-                else if(fb==ProbeResult.NO_CELLULAR)handleFailure("3/4 S26 서버 연결됨 · S26 LTE/5G 데이터 경로 대기");
+                else if(fb==ProbeResult.NO_CELLULAR)handleFailure("3/4 S26 서버 연결됨 · S26 인터넷 경로 대기");
                 else handleFailure("2/4 Wi-Fi 연결됨 · S26 ShareLink 서버 51950 응답 없음");
                 schedule(fh!=null?3000:1200);
             });
@@ -121,8 +125,17 @@ public class ClientLinkService extends Service {
         }catch(Exception e){Diag.log(this,"SOCKS_PROBE_ERROR host="+host+" "+e.getClass().getSimpleName()+":"+e.getMessage());return ProbeResult.NO_HOST;}
     }
 
-    private void handleSuccess(String host){misses=0;getSharedPreferences("sharelink",0).edit().putString("host_ip",host).apply();status("4/4 S26 Wi-Fi + LTE/5G 실제 확인 완료 · 인터넷 VPN 시작");if(VpnService.prepare(this)==null)startVpn(host);else sendBroadcast(new Intent(ACTION_NEED_VPN).setPackage(getPackageName()));}
-    private void handleFailure(String text){misses++;status(text);if(misses>=2)stopService(new Intent(this,ShareVpnService.class));}
+    private void handleSuccess(String host){
+        misses=0;getSharedPreferences("sharelink",0).edit().putString("host_ip",host).apply();
+        if(healthy&&host.equals(healthyHost)){Diag.log(this,"HEALTH_OK host="+host);return;}
+        healthy=true;healthyHost=host;status("4/4 ShareLink 연결 안정 · 인터넷 + RoonLink 준비됨");
+        if(VpnService.prepare(this)==null)startVpn(host);else sendBroadcast(new Intent(ACTION_NEED_VPN).setPackage(getPackageName()));
+    }
+    private void handleFailure(String text){
+        misses++;
+        if(healthy&&misses<2){Diag.log(this,"HEALTH_TRANSIENT_FAIL misses="+misses+" text="+text);return;}
+        healthy=false;healthyHost=null;status(text);if(misses>=2)stopService(new Intent(this,ShareVpnService.class));
+    }
     private void startVpn(String host){Diag.log(this,"VPN_START_REQUEST host="+host);Intent i=new Intent(this,ShareVpnService.class).putExtra("host",host);if(Build.VERSION.SDK_INT>=26)startForegroundService(i);else startService(i);}
     private static byte[] readN(InputStream in,int n)throws IOException{byte[] b=new byte[n];int p=0;while(p<n){int r=in.read(b,p,n-p);if(r<0)throw new EOFException();p+=r;}return b;}
     private static int readU8(InputStream in)throws IOException{int x=in.read();if(x<0)throw new EOFException();return x;}
