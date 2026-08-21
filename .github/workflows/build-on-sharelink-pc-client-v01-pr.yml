@@ -1,0 +1,112 @@
+name: Build ON ShareLink PC Client v0.1 PR
+
+on:
+  pull_request:
+    branches: [ on-sharelink-v16-performance-golden-20260822 ]
+    paths:
+      - 'pc-client/**'
+      - '.github/workflows/build-on-sharelink-pc-client-v01-pr.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Fetch pinned HEV Windows engine and official Wintun
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force pc-client/Resources | Out-Null
+          New-Item -ItemType Directory -Force thirdparty | Out-Null
+
+          $hevTag = '2.17.0'
+          $headers = @{ 'User-Agent' = 'ON-ShareLink-CI' }
+          $rel = Invoke-RestMethod -Headers $headers -Uri "https://api.github.com/repos/heiher/hev-socks5-tunnel/releases/tags/$hevTag"
+          $asset = $rel.assets | Where-Object {
+            $_.name -match '(?i)(windows|win)' -and $_.name -match '(?i)(x86_64|amd64|x64)'
+          } | Select-Object -First 1
+          if (-not $asset) {
+            $names = ($rel.assets | ForEach-Object { $_.name }) -join ', '
+            throw "No HEV Windows x64 release asset found. Assets: $names"
+          }
+          $hevDownload = Join-Path $PWD ('thirdparty/' + $asset.name)
+          Invoke-WebRequest -Headers $headers -Uri $asset.browser_download_url -OutFile $hevDownload
+          if ($asset.digest -and $asset.digest.StartsWith('sha256:')) {
+            $expected = $asset.digest.Substring(7).ToLowerInvariant()
+            $actual = (Get-FileHash $hevDownload -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($actual -ne $expected) { throw "HEV digest mismatch expected=$expected actual=$actual" }
+          }
+
+          $hevExe = $null
+          if ($hevDownload.EndsWith('.exe')) {
+            $hevExe = $hevDownload
+          } else {
+            $extract = Join-Path $PWD 'thirdparty/hev-extract'
+            New-Item -ItemType Directory -Force $extract | Out-Null
+            if ($hevDownload.EndsWith('.zip')) { Expand-Archive -Path $hevDownload -DestinationPath $extract -Force }
+            else { tar -xf $hevDownload -C $extract }
+            $candidate = Get-ChildItem $extract -Recurse -File | Where-Object { $_.Name -match '(?i)^hev-socks5-tunnel.*(\.exe)?$' } | Select-Object -First 1
+            if ($candidate) { $hevExe = $candidate.FullName }
+          }
+          if (-not $hevExe) { throw 'HEV executable not found after extraction' }
+          Copy-Item $hevExe pc-client/Resources/hev-socks5-tunnel.exe -Force
+
+          $wintunUrl = 'https://www.wintun.net/builds/wintun-0.14.1.zip'
+          $wintunZip = Join-Path $PWD 'thirdparty/wintun-0.14.1.zip'
+          Invoke-WebRequest -Uri $wintunUrl -OutFile $wintunZip
+          $expectedWintun = '07c256185d6ee3652e09fa55c0b673e2624b565e02c4b9091c79ca7d2f24ef51'
+          $actualWintun = (Get-FileHash $wintunZip -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actualWintun -ne $expectedWintun) { throw "Wintun digest mismatch expected=$expectedWintun actual=$actualWintun" }
+          $wintunDir = Join-Path $PWD 'thirdparty/wintun'
+          Expand-Archive -Path $wintunZip -DestinationPath $wintunDir -Force
+          $wintunDll = (Get-ChildItem $wintunDir -Recurse -File -Filter wintun.dll | Where-Object { $_.FullName -match '(?i)amd64' } | Select-Object -First 1).FullName
+          if (-not $wintunDll) { throw 'Official AMD64 wintun.dll not found' }
+          Copy-Item $wintunDll pc-client/Resources/wintun.dll -Force
+
+          & pc-client/Resources/hev-socks5-tunnel.exe --version 2>&1 | Write-Host
+
+      - name: Guard route safety
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $src = Get-Content pc-client/Program.cs -Raw
+          if ($src -notmatch '192\.168\.49\.1') { throw 'S26 gateway missing' }
+          if ($src -notmatch '51950') { throw 'S26 SOCKS port missing' }
+          if ($src -match '0\.0\.0\.0/0') { throw 'unsafe default route introduced' }
+          if ($src -match '192\.168\.49\.0/24') { throw 'S26 local network must not enter TUN route list' }
+          if ($src -notmatch "udp: 'udp'") { throw 'UDP relay not enabled' }
+          if ($src -notmatch "log-level: warn") { throw 'performance log level regression' }
+
+      - name: Publish Windows x64 EXE
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet publish pc-client/ONShareLinkPC.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o publish
+          if (-not (Test-Path 'publish/ON-ShareLink-PC-Client.exe')) { throw 'PC client EXE missing' }
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force out | Out-Null
+          Copy-Item publish/ON-ShareLink-PC-Client.exe out/ON-ShareLink-PC-Client-v0.1.exe
+          Copy-Item pc-client/README.md out/README-PC-CLIENT.md
+          $hash = (Get-FileHash out/ON-ShareLink-PC-Client-v0.1.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  ON-ShareLink-PC-Client-v0.1.exe" | Set-Content out/SHA256SUMS.txt -Encoding ASCII
+          Compress-Archive -Path out/* -DestinationPath ON-ShareLink-PC-Client-v0.1.zip -Force
+          Copy-Item ON-ShareLink-PC-Client-v0.1.zip out/ON-ShareLink-PC-Client-v0.1.zip
+          Get-Content out/SHA256SUMS.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ON-ShareLink-PC-Client-v0.1
+          path: out/
