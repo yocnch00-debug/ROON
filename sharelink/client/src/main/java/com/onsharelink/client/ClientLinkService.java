@@ -29,7 +29,7 @@ public class ClientLinkService extends Service {
     private String lastStatus="";
 
     @Override public void onCreate(){
-        super.onCreate();cm=(ConnectivityManager)getSystemService(CONNECTIVITY_SERVICE);foreground("ShareLink 저장 Wi-Fi 확인중");registerWifiCallback();Diag.log(this,"LINK_SERVICE_CREATE sdk="+Build.VERSION.SDK_INT);
+        super.onCreate();cm=(ConnectivityManager)getSystemService(CONNECTIVITY_SERVICE);foreground("ShareLink 저장 Wi-Fi 확인중");registerWifiCallback();Diag.log(this,"LINK_SERVICE_CREATE sdk="+Build.VERSION.SDK_INT+" gate=SOCKS_AUTH_ONLY");
     }
 
     @Override public int onStartCommand(Intent i,int f,int id){
@@ -74,22 +74,21 @@ public class ClientLinkService extends Service {
             status("1/4 ShareLink Wi-Fi 연결 대기 · 저장망 자동 재접속 중");schedule(1200);return;
         }
 
-        if(!healthy)status("2/4 ShareLink Wi-Fi 연결됨 · S26 서버 확인중");
-        else Diag.log(this,"HEALTH_PROBE_BEGIN host="+healthyHost);
+        if(!healthy)status("2/4 ShareLink Wi-Fi 연결됨 · S26 인증 확인중");
+        else Diag.log(this,"HEALTH_AUTH_BEGIN host="+healthyHost);
         io.execute(()->{
             ProbeHit hit=null;ProbeResult best=ProbeResult.NO_HOST;
             for(Candidate c:candidates){
-                ProbeResult r=probe(c.network,c.gateway,code);Diag.log(this,"SOCKS_PROBE net="+c.network+" host="+c.gateway+" result="+r);
+                ProbeResult r=probeAuth(c.network,c.gateway,code);Diag.log(this,"SOCKS_AUTH_PROBE net="+c.network+" host="+c.gateway+" result="+r);
                 if(r==ProbeResult.OK){hit=new ProbeHit(c.gateway);break;}
-                if(r==ProbeResult.BAD_CODE)best=r;else if(r==ProbeResult.NO_CELLULAR&&best!=ProbeResult.BAD_CODE)best=r;
+                if(r==ProbeResult.BAD_CODE)best=r;
             }
             final ProbeHit fh=hit;final ProbeResult fb=best;
             h.post(()->{
                 probing.set(false);
                 if(fh!=null)handleSuccess(fh.host);
                 else if(fb==ProbeResult.BAD_CODE)handleFailure("2/4 Wi-Fi 연결됨 · S26과 8자리 코드가 다름");
-                else if(fb==ProbeResult.NO_CELLULAR)handleFailure("3/4 S26 서버 연결됨 · S26 인터넷 경로 대기");
-                else handleFailure("2/4 Wi-Fi 연결됨 · S26 ShareLink 서버 51950 응답 없음");
+                else handleFailure("2/4 Wi-Fi 연결됨 · S26 ShareLink 인증 응답 없음");
                 schedule(fh!=null?3000:1200);
             });
         });
@@ -112,37 +111,37 @@ public class ClientLinkService extends Service {
         return out;
     }
 
-    private ProbeResult probe(Network n,String host,String code){
+    private ProbeResult probeAuth(Network n,String host,String code){
         if(code==null||!code.matches("\\d{8}"))return ProbeResult.BAD_CODE;
+        String stage="CONNECT";
         try(Socket s=n.getSocketFactory().createSocket()){
-            s.connect(new InetSocketAddress(host,51950),3000);s.setSoTimeout(6000);InputStream in=s.getInputStream();OutputStream out=s.getOutputStream();
-            out.write(new byte[]{5,1,2});out.flush();byte[] hello=readN(in,2);if((hello[0]&255)!=5||(hello[1]&255)!=2)return ProbeResult.NO_HOST;
-            byte[] u="onshare".getBytes(StandardCharsets.UTF_8),p=code.getBytes(StandardCharsets.UTF_8);ByteArrayOutputStream a=new ByteArrayOutputStream();a.write(1);a.write(u.length);a.write(u);a.write(p.length);a.write(p);out.write(a.toByteArray());out.flush();
+            s.connect(new InetSocketAddress(host,51950),3000);s.setSoTimeout(4000);InputStream in=s.getInputStream();OutputStream out=s.getOutputStream();
+            stage="GREETING";out.write(new byte[]{5,1,2});out.flush();byte[] hello=readN(in,2);
+            if((hello[0]&255)!=5||(hello[1]&255)!=2){Diag.log(this,"SOCKS_AUTH_METHOD_BAD host="+host+" ver="+(hello[0]&255)+" method="+(hello[1]&255));return ProbeResult.NO_HOST;}
+            stage="AUTH";byte[] u="onshare".getBytes(StandardCharsets.UTF_8),p=code.getBytes(StandardCharsets.UTF_8);ByteArrayOutputStream a=new ByteArrayOutputStream();a.write(1);a.write(u.length);a.write(u);a.write(p.length);a.write(p);out.write(a.toByteArray());out.flush();
             byte[] auth=readN(in,2);if((auth[0]&255)!=1||(auth[1]&255)!=0)return ProbeResult.BAD_CODE;
-            out.write(new byte[]{5,1,0,1,1,1,1,1,1,(byte)0xbb});out.flush();byte[] rh=readN(in,4);if((rh[0]&255)!=5)return ProbeResult.NO_HOST;int rep=rh[1]&255;int atyp=rh[3]&255;
-            if(atyp==1)readN(in,4);else if(atyp==4)readN(in,16);else if(atyp==3)readN(in,readU8(in));else return ProbeResult.NO_HOST;readN(in,2);
-            if(rep==0)return ProbeResult.OK;if(rep==3||rep==4||rep==5)return ProbeResult.NO_CELLULAR;return ProbeResult.NO_HOST;
-        }catch(Exception e){Diag.log(this,"SOCKS_PROBE_ERROR host="+host+" "+e.getClass().getSimpleName()+":"+e.getMessage());return ProbeResult.NO_HOST;}
+            Diag.log(this,"SOCKS_AUTH_OK host="+host+" net="+n+" · external preflight intentionally skipped");
+            return ProbeResult.OK;
+        }catch(Exception e){Diag.log(this,"SOCKS_AUTH_ERROR stage="+stage+" host="+host+" "+e.getClass().getSimpleName()+":"+e.getMessage());return ProbeResult.NO_HOST;}
     }
 
     private void handleSuccess(String host){
         misses=0;getSharedPreferences("sharelink",0).edit().putString("host_ip",host).apply();
-        if(healthy&&host.equals(healthyHost)){Diag.log(this,"HEALTH_OK host="+host);return;}
-        healthy=true;healthyHost=host;status("4/4 ShareLink 인터넷 경로 안정 · Roon Sidecar는 wlan0 직통");
+        if(healthy&&host.equals(healthyHost)){Diag.log(this,"HEALTH_AUTH_OK host="+host);return;}
+        healthy=true;healthyHost=host;status("4/4 S26 인증 OK · ShareLink VPN 시작 · Roon Sidecar wlan0 직통");
         if(VpnService.prepare(this)==null)startVpn(host);else sendBroadcast(new Intent(ACTION_NEED_VPN).setPackage(getPackageName()));
     }
     private void handleFailure(String text){
         misses++;
-        if(healthy&&misses<2){Diag.log(this,"HEALTH_TRANSIENT_FAIL misses="+misses+" text="+text);return;}
-        healthy=false;healthyHost=null;status(text);if(misses>=2)stopService(new Intent(this,ShareVpnService.class));
+        if(healthy&&misses<3){Diag.log(this,"HEALTH_TRANSIENT_FAIL misses="+misses+" text="+text);return;}
+        healthy=false;healthyHost=null;status(text);if(misses>=3)stopService(new Intent(this,ShareVpnService.class));
     }
     private void startVpn(String host){Diag.log(this,"VPN_START_REQUEST host="+host);Intent i=new Intent(this,ShareVpnService.class).putExtra("host",host);if(Build.VERSION.SDK_INT>=26)startForegroundService(i);else startService(i);}
     private static byte[] readN(InputStream in,int n)throws IOException{byte[] b=new byte[n];int p=0;while(p<n){int r=in.read(b,p,n-p);if(r<0)throw new EOFException();p+=r;}return b;}
-    private static int readU8(InputStream in)throws IOException{int x=in.read();if(x<0)throw new EOFException();return x;}
 
     @Override public void onDestroy(){Diag.log(this,"LINK_SERVICE_DESTROY");h.removeCallbacksAndMessages(null);io.shutdownNow();try{if(wifiCallback!=null)cm.unregisterNetworkCallback(wifiCallback);}catch(Exception ignored){}super.onDestroy();}
     @Override public IBinder onBind(Intent i){return null;}
-    private enum ProbeResult{OK,BAD_CODE,NO_CELLULAR,NO_HOST}
+    private enum ProbeResult{OK,BAD_CODE,NO_HOST}
     private static final class Candidate{final Network network;final String gateway;Candidate(Network n,String g){network=n;gateway=g;}}
     private static final class ProbeHit{final String host;ProbeHit(String h){host=h;}}
 }
