@@ -1,0 +1,81 @@
+name: Build ON ShareLink v0.1 Cleanroom
+
+on:
+  push:
+    branches: [ on-sharelink-v01-build-20260821 ]
+    paths:
+      - 'sharelink/**'
+      - '.github/workflows/build-on-sharelink-v01.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - name: Install Android SDK and NDK
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager 'platforms;android-35' 'build-tools;35.0.0' 'ndk;27.2.12479018'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+      - name: Prepare stable signing key
+        run: |
+          base64 -d android-sidecar/onroonlink-test.jks.b64 > sharelink/onroonlink-test.jks
+      - name: Build pinned MIT tun2socks for arm64
+        run: |
+          set -euxo pipefail
+          git clone --recursive https://github.com/heiher/hev-socks5-tunnel.git /tmp/hev
+          cd /tmp/hev
+          git checkout 0428c4ebb0df933ebac8e507832f252ef7da47f1
+          git submodule update --init --recursive
+          "$ANDROID_HOME/ndk/27.2.12479018/ndk-build" -j2 APP_ABI=arm64-v8a APP_PLATFORM=android-29
+          test -f libs/arm64-v8a/libhev-socks5-tunnel.so
+          mkdir -p "$GITHUB_WORKSPACE/sharelink/client/src/main/jniLibs/arm64-v8a"
+          cp libs/arm64-v8a/libhev-socks5-tunnel.so "$GITHUB_WORKSPACE/sharelink/client/src/main/jniLibs/arm64-v8a/"
+      - name: Clean-room and routing guards
+        run: |
+          set -euxo pipefail
+          ! grep -R -i -n 'kha\.prog\.mikrotik\|Proxy-agent: NetShare' sharelink || false
+          grep -q 'TRANSPORT_CELLULAR' sharelink/host/src/main/java/com/onsharelink/host/ShareHostService.java
+          grep -q 'getSocketFactory().createSocket' sharelink/host/src/main/java/com/onsharelink/host/Socks5Server.java
+          grep -q 'bindSocket(outbound)' sharelink/host/src/main/java/com/onsharelink/host/Socks5Server.java
+          grep -q '192.168.0.0/16' sharelink/README.md
+          if grep -q '0.0.0.0/0' sharelink/client/src/main/java/com/onsharelink/client/PublicRoutes.java; then echo 'Default route would swallow local Roon paths'; exit 1; fi
+          grep -q '208.0.0.0/4' sharelink/client/src/main/java/com/onsharelink/client/PublicRoutes.java
+          grep -q 'udp: '\''udp'\''' sharelink/client/src/main/java/com/onsharelink/client/ShareVpnService.java
+      - name: Build signed Host and Client APKs
+        working-directory: sharelink
+        run: gradle --no-daemon :host:assembleRelease :client:assembleRelease
+      - name: Verify APKs and package
+        run: |
+          set -euxo pipefail
+          H=sharelink/host/build/outputs/apk/release/host-release.apk
+          C=sharelink/client/build/outputs/apk/release/client-release.apk
+          test -f "$H"; test -f "$C"
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$H" > /tmp/host-sign.txt
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$C" > /tmp/client-sign.txt
+          "$ANDROID_HOME/build-tools/35.0.0/zipalign" -c -P 16 -v 4 "$H" > /tmp/host-align.txt
+          "$ANDROID_HOME/build-tools/35.0.0/zipalign" -c -P 16 -v 4 "$C" > /tmp/client-align.txt
+          unzip -t "$H" >/tmp/host-unzip.txt; unzip -t "$C" >/tmp/client-unzip.txt
+          mkdir -p out
+          cp "$H" out/ON-ShareLink-S26-Host-v0.1-CLEANROOM.apk
+          cp "$C" out/ON-ShareLink-Client-v0.1-CLEANROOM.apk
+          cp sharelink/README.md out/README.md
+          cp sharelink/THIRD_PARTY_NOTICES.md out/THIRD_PARTY_NOTICES.md
+          cp /tmp/host-sign.txt out/HOST-SIGNATURE.txt
+          cp /tmp/client-sign.txt out/CLIENT-SIGNATURE.txt
+          sha256sum out/*.apk > out/SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ON-ShareLink-v0.1-CLEANROOM
+          path: out/

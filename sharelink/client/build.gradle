@@ -1,10 +1,10 @@
 plugins { id 'com.android.application' }
 
 android {
-    namespace 'com.onsharelink.host'
+    namespace 'com.onsharelink.client'
     compileSdk 35
     defaultConfig {
-        applicationId 'com.onsharelink.host'
+        applicationId 'com.onsharelink.client'
         minSdk 26
         targetSdk 35
         versionCode 1
@@ -22,4 +22,5 @@ android {
         debug { signingConfig signingConfigs.onTest }
         release { minifyEnabled false; signingConfig signingConfigs.onTest }
     }
+    sourceSets { main { jniLibs.srcDirs = ['src/main/jniLibs'] } }
 }
