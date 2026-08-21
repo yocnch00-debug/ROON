@@ -1,0 +1,25 @@
+plugins { id 'com.android.application' }
+
+android {
+    namespace 'com.onsharelink.host'
+    compileSdk 35
+    defaultConfig {
+        applicationId 'com.onsharelink.host'
+        minSdk 26
+        targetSdk 35
+        versionCode 3
+        versionName '0.3-one-tap'
+    }
+    signingConfigs {
+        onTest {
+            storeFile file('../onroonlink-test.jks')
+            storePassword 'onroonlink'
+            keyAlias 'onroonlink'
+            keyPassword 'onroonlink'
+        }
+    }
+    buildTypes {
+        debug { signingConfig signingConfigs.onTest }
+        release { minifyEnabled false; signingConfig signingConfigs.onTest }
+    }
+}

@@ -1,0 +1,26 @@
+plugins { id 'com.android.application' }
+
+android {
+    namespace 'com.onsharelink.client'
+    compileSdk 35
+    defaultConfig {
+        applicationId 'com.onsharelink.client'
+        minSdk 26
+        targetSdk 35
+        versionCode 4
+        versionName '0.4-wifi-save'
+    }
+    signingConfigs {
+        onTest {
+            storeFile file('../onroonlink-test.jks')
+            storePassword 'onroonlink'
+            keyAlias 'onroonlink'
+            keyPassword 'onroonlink'
+        }
+    }
+    buildTypes {
+        debug { signingConfig signingConfigs.onTest }
+        release { minifyEnabled false; signingConfig signingConfigs.onTest }
+    }
+    sourceSets { main { jniLibs.srcDirs = ['src/main/jniLibs'] } }
+}
