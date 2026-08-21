@@ -10,9 +10,10 @@ import java.util.concurrent.atomic.*;
 import java.util.function.*;
 
 public final class Socks5Server implements Closeable {
+    private static final int COPY_BUFFER_SIZE=65536;
     private final InetAddress bindAddress;
     private final int port;
-    /* Kept in the constructor for source compatibility/status ownership, but v1.4 intentionally
+    /* Kept in the constructor for source compatibility/status ownership, but v1.4+ intentionally
        never binds outbound sockets to this Network. Existing ON RoonLink is a split VPN; forcing
        a socket onto the physical CELLULAR Network returns EPERM on the S26. Plain sockets follow
        Android's normal public/default route, which remains LTE/5G for Internet destinations. */
@@ -22,6 +23,9 @@ public final class Socks5Server implements Closeable {
     private final ExecutorService pool=Executors.newCachedThreadPool();
     private final AtomicInteger activeSessions=new AtomicInteger();
     private final ConcurrentHashMap<String,ClientTraffic> traffic=new ConcurrentHashMap<>();
+    private final AtomicBoolean tcpRouteLogged=new AtomicBoolean();
+    private final AtomicBoolean udpRouteLogged=new AtomicBoolean();
+    private final AtomicBoolean dnsRouteLogged=new AtomicBoolean();
     private volatile boolean running;
     private ServerSocket server;
 
@@ -34,7 +38,7 @@ public final class Socks5Server implements Closeable {
         if(isRunning())return;
         server=new ServerSocket();server.setReuseAddress(true);
         server.bind(new InetSocketAddress(port));
-        running=true;emit("SOCKS_LISTEN 0.0.0.0:"+port+" p2p="+bindAddress.getHostAddress()+" outbound=DEFAULT_ROUTE_NO_BIND");pool.execute(this::acceptLoop);
+        running=true;emit("SOCKS_LISTEN 0.0.0.0:"+port+" p2p="+bindAddress.getHostAddress()+" outbound=DEFAULT_ROUTE_NO_BIND buffer="+COPY_BUFFER_SIZE);pool.execute(this::acceptLoop);
     }
 
     public String trafficSummary(){
@@ -94,16 +98,16 @@ public final class Socks5Server implements Closeable {
 
     private Socket openOutboundTcp(InetAddress target,int port)throws Exception{
         Socket s=new Socket();s.setTcpNoDelay(true);s.connect(new InetSocketAddress(target,port),10000);
-        emit("OUTBOUND_DEFAULT_ROUTE_TCP_OK target="+target.getHostAddress()+":"+port+" local="+s.getLocalSocketAddress());return s;
+        if(tcpRouteLogged.compareAndSet(false,true))emit("OUTBOUND_DEFAULT_ROUTE_TCP_OK target="+target.getHostAddress()+":"+port+" local="+s.getLocalSocketAddress());return s;
     }
 
     private InetAddress resolveTarget(Target t)throws Exception{
         if(t.address!=null)return t.address;
         InetAddress[] aa=InetAddress.getAllByName(t.host);if(aa==null||aa.length==0)throw new UnknownHostException(t.host);
-        emit("DNS_DEFAULT_ROUTE_OK host="+t.host+" result="+aa[0].getHostAddress());return aa[0];
+        if(dnsRouteLogged.compareAndSet(false,true))emit("DNS_DEFAULT_ROUTE_OK host="+t.host+" result="+aa[0].getHostAddress());return aa[0];
     }
 
-    private void pump(Socket from,Socket to,Runnable close,ClientTraffic tr,boolean upload){byte[] b=new byte[32768];try{InputStream in=from.getInputStream();OutputStream out=to.getOutputStream();for(int r;(r=in.read(b))>=0;){if(r>0){out.write(b,0,r);out.flush();if(upload)tr.up.addAndGet(r);else tr.down.addAndGet(r);tr.touch();}}}catch(Exception ignored){}finally{close.run();}}
+    private void pump(Socket from,Socket to,Runnable close,ClientTraffic tr,boolean upload){byte[] b=new byte[COPY_BUFFER_SIZE];try{InputStream in=from.getInputStream();OutputStream out=to.getOutputStream();for(int r;(r=in.read(b))>=0;){if(r>0){out.write(b,0,r);if(upload)tr.up.addAndGet(r);else tr.down.addAndGet(r);tr.touch();}}}catch(Exception ignored){}finally{close.run();}}
 
     private void handleUdpAssociate(Socket control,OutputStream controlOut,ClientTraffic tr) throws Exception {
         DatagramSocket relay=new DatagramSocket(new InetSocketAddress(bindAddress,0));DatagramSocket outbound=openOutboundUdp();relay.setSoTimeout(1000);outbound.setSoTimeout(1000);
@@ -114,7 +118,7 @@ public final class Socks5Server implements Closeable {
     }
 
     private DatagramSocket openOutboundUdp()throws Exception{
-        DatagramSocket d=new DatagramSocket();emit("OUTBOUND_DEFAULT_ROUTE_UDP_OK local="+d.getLocalSocketAddress());return d;
+        DatagramSocket d=new DatagramSocket();if(udpRouteLogged.compareAndSet(false,true))emit("OUTBOUND_DEFAULT_ROUTE_UDP_OK local="+d.getLocalSocketAddress());return d;
     }
 
     private Target readTarget(InputStream in,int atyp)throws Exception{

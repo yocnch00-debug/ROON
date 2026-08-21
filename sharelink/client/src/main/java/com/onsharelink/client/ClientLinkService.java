@@ -17,6 +17,8 @@ public class ClientLinkService extends Service {
     public static final String ACTION_STATUS="com.onsharelink.client.LINK_STATUS";
     public static final String ACTION_NEED_VPN="com.onsharelink.client.NEED_VPN";
     public static final String SHARE_SSID="DIRECT-ON-ShareLink";
+    private static final long HEALTHY_CHECK_MS=10000L;
+    private static final long RETRY_CHECK_MS=1200L;
     private final Handler h=new Handler(Looper.getMainLooper());
     private final ExecutorService io=Executors.newSingleThreadExecutor();
     private final AtomicBoolean probing=new AtomicBoolean();
@@ -29,7 +31,7 @@ public class ClientLinkService extends Service {
     private String lastStatus="";
 
     @Override public void onCreate(){
-        super.onCreate();cm=(ConnectivityManager)getSystemService(CONNECTIVITY_SERVICE);foreground("ShareLink 저장 Wi-Fi 확인중");registerWifiCallback();Diag.log(this,"LINK_SERVICE_CREATE sdk="+Build.VERSION.SDK_INT+" gate=SOCKS_AUTH_ONLY");
+        super.onCreate();cm=(ConnectivityManager)getSystemService(CONNECTIVITY_SERVICE);foreground("ShareLink 저장 Wi-Fi 확인중");registerWifiCallback();Diag.log(this,"LINK_SERVICE_CREATE sdk="+Build.VERSION.SDK_INT+" gate=SOCKS_AUTH_ONLY health="+HEALTHY_CHECK_MS+"ms");
     }
 
     @Override public int onStartCommand(Intent i,int f,int id){
@@ -71,7 +73,7 @@ public class ClientLinkService extends Service {
             probing.set(false);healthy=false;healthyHost=null;misses=0;stopService(new Intent(this,ShareVpnService.class));
             long now=SystemClock.elapsedRealtime();
             if(now-lastReconnectAttempt>=6000){lastReconnectAttempt=now;WifiBootstrap.reconnectSaved(this,SHARE_SSID);}
-            status("1/4 ShareLink Wi-Fi 연결 대기 · 저장망 자동 재접속 중");schedule(1200);return;
+            status("1/4 ShareLink Wi-Fi 연결 대기 · 저장망 자동 재접속 중");schedule(RETRY_CHECK_MS);return;
         }
 
         if(!healthy)status("2/4 ShareLink Wi-Fi 연결됨 · S26 인증 확인중");
@@ -89,7 +91,7 @@ public class ClientLinkService extends Service {
                 if(fh!=null)handleSuccess(fh.host);
                 else if(fb==ProbeResult.BAD_CODE)handleFailure("2/4 Wi-Fi 연결됨 · S26과 8자리 코드가 다름");
                 else handleFailure("2/4 Wi-Fi 연결됨 · S26 ShareLink 인증 응답 없음");
-                schedule(fh!=null?3000:1200);
+                schedule(fh!=null?HEALTHY_CHECK_MS:RETRY_CHECK_MS);
             });
         });
     }
