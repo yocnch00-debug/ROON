@@ -1,0 +1,98 @@
+name: Build R8 v2.4 Diagnostic Stable
+
+on:
+  push:
+    branches: [ stability-pc-v36-r8-v24-20260821 ]
+    paths:
+      - 'tools/r8v24-source.b64.part*'
+      - '.github/workflows/build-r8-v24-diagnostic-stable.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - name: Install Android SDK 36
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.13'
+      - name: Reconstruct reviewed v2.4 source
+        run: |
+          set -euxo pipefail
+          cat tools/r8v24-source.b64.part01 tools/r8v24-source.b64.part02 tools/r8v24-source.b64.part03 tools/r8v24-source.b64.part04 tools/r8v24-source.b64.part05 > /tmp/r8-v24-source.b64
+          base64 -d /tmp/r8-v24-source.b64 > /tmp/r8-v24-source.zip
+          echo '0acf5fc2b68abe77be3e1eadb5e8d56260c3baee7b2503aa2233091f94795293  /tmp/r8-v24-source.zip' | sha256sum -c -
+          unzip -t /tmp/r8-v24-source.zip
+          mkdir work-r8
+          unzip -q /tmp/r8-v24-source.zip -d work-r8
+          base64 -d android-sidecar/onroonlink-test.jks.b64 > work-r8/r8-v24/onroonlink-test.jks
+      - name: Regression guards
+        run: |
+          set -euxo pipefail
+          ROOT=work-r8/r8-v24
+          grep -q 'versionCode = 14' "$ROOT/app/build.gradle.kts"
+          grep -q 'versionName = "2.4-diagnostic-stable"' "$ROOT/app/build.gradle.kts"
+          grep -q '2.4-DIAGNOSTIC-STABLE' "$ROOT/app/src/main/java/com/onroonlink/sidecar/BridgeService.java"
+          grep -q 'AUX_UDP_TO_R8=40' "$ROOT/app/src/main/java/com/onroonlink/sidecar/TunnelMux.java"
+          grep -q 'AUX_UDP_FROM_R8=41' "$ROOT/app/src/main/java/com/onroonlink/sidecar/TunnelMux.java"
+          grep -q 'WLAN-SELF' "$ROOT/app/src/main/java/com/onroonlink/sidecar/BridgeService.java"
+          grep -q 'query_service_id' "$ROOT/app/src/main/java/com/onroonlink/sidecar/BridgeService.java"
+          grep -q 'service_id' "$ROOT/app/src/main/java/com/onroonlink/sidecar/BridgeService.java"
+          grep -q 'ROUTE_CONFIRM_MS=1800L' "$ROOT/app/src/main/java/com/onroonlink/sidecar/BridgeService.java"
+          grep -q 'ROUTE_TRANSIENT_IGNORED' "$ROOT/app/src/main/java/com/onroonlink/sidecar/BridgeService.java"
+          grep -q 'PING_SEND_FAILURE' "$ROOT/app/src/main/java/com/onroonlink/sidecar/BridgeService.java"
+          grep -q 'READ_EOF' "$ROOT/app/src/main/java/com/onroonlink/sidecar/BridgeService.java"
+          grep -q 'SOOD_NO_RESPONSE' "$ROOT/app/src/main/java/com/onroonlink/sidecar/BridgeService.java"
+          grep -q 'roonbridge-v2.4.log' "$ROOT/app/src/main/java/com/onroonlink/sidecar/BridgeService.java"
+          grep -q '진단 로그 불러오기' "$ROOT/app/src/main/java/com/onroonlink/sidecar/MainActivity.java"
+          if grep -q 'android.net.VpnService' "$ROOT/app/src/main/AndroidManifest.xml"; then echo 'Unexpected VpnService regression'; exit 1; fi
+      - name: Build release APK
+        working-directory: work-r8/r8-v24
+        run: gradle --no-daemon :app:assembleRelease
+      - name: Verify and package
+        run: |
+          set -euxo pipefail
+          ROOT=work-r8/r8-v24
+          APK="$ROOT/app/build/outputs/apk/release/app-release.apk"
+          if [ ! -f "$APK" ]; then APK="$ROOT/app/build/outputs/apk/release/app-release-unsigned.apk"; fi
+          test -f "$APK"
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose --print-certs "$APK" > /tmp/apksigner.txt
+          "$ANDROID_HOME/build-tools/36.0.0/zipalign" -c -P 16 -v 4 "$APK" > /tmp/zipalign.txt
+          unzip -t "$APK" > /tmp/unzip-test.txt
+          mkdir -p out
+          cp "$APK" out/ON-Roon-NetShare-R8-Sidecar-v2.4-DIAGNOSTIC-STABLE.apk
+          cp /tmp/r8-v24-source.zip out/R8-v2.4-source.zip
+          cp /tmp/apksigner.txt out/APKSIGNER.txt
+          cp /tmp/zipalign.txt out/ZIPALIGN.txt
+          cp /tmp/unzip-test.txt out/UNZIP-TEST.txt
+          sha256sum out/ON-Roon-NetShare-R8-Sidecar-v2.4-DIAGNOSTIC-STABLE.apk out/R8-v2.4-source.zip > out/SHA256.txt
+          cat > out/README.txt <<'TXT'
+          R8 v2.4 DIAGNOSTIC STABLE
+
+          Based on the proven v2.3 network-recovery path. RAAT/SOOD framing and audio data path are unchanged.
+
+          Targeted fixes:
+          - service=null display: query_service_id falls back to actual service_id.
+          - 1.8s confirmed route validation prevents very short Android/NetShare Network-handle churn from tearing down a healthy tunnel.
+          - true gateway write failures still reconnect immediately.
+          - bounded persistent diagnostic log + Logcat event codes for route loss, EOF/read error, ping failure, silent timeout and SOOD no-response.
+          - UI button can load diagnostic log tail.
+
+          NetShare remains the only R8 VPN. No VpnService was added.
+          TXT
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ON-Roon-R8-v2.4-DIAGNOSTIC-STABLE
+          path: out/
