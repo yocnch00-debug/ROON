@@ -128,7 +128,7 @@ public class ClientLinkService extends Service {
     private void handleSuccess(String host){
         misses=0;getSharedPreferences("sharelink",0).edit().putString("host_ip",host).apply();
         if(healthy&&host.equals(healthyHost)){Diag.log(this,"HEALTH_OK host="+host);return;}
-        healthy=true;healthyHost=host;status("4/4 ShareLink 연결 안정 · 인터넷 + RoonLink 준비됨");
+        healthy=true;healthyHost=host;status("4/4 ShareLink 인터넷 경로 안정 · Roon Sidecar는 wlan0 직통");
         if(VpnService.prepare(this)==null)startVpn(host);else sendBroadcast(new Intent(ACTION_NEED_VPN).setPackage(getPackageName()));
     }
     private void handleFailure(String text){
