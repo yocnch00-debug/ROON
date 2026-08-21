@@ -7,7 +7,7 @@ on:
       - 'sharelink/**'
       - '.github/workflows/build-on-sharelink-v16-performance.yml'
   pull_request:
-    branches: [ main ]
+    branches: [ on-sharelink-v15-roon-coexist-20260822 ]
     paths:
       - 'sharelink/**'
       - '.github/workflows/build-on-sharelink-v16-performance.yml'
