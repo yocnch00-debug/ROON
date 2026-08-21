@@ -10,7 +10,7 @@ import android.widget.*;
 import java.util.*;
 
 public class MainActivity extends Activity {
-    private TextView status,wifiInfo,clientsView;
+    private TextView status,wifiInfo,clientsView,trafficView;
     private EditText pairingInput;
     private Switch shareSwitch;
     private boolean bindingSwitch;
@@ -27,8 +27,8 @@ public class MainActivity extends Activity {
     @Override public void onCreate(Bundle b){
         super.onCreate(b);
         ScrollView sv=new ScrollView(this);LinearLayout root=new LinearLayout(this);root.setOrientation(LinearLayout.VERTICAL);root.setPadding(36,44,36,44);sv.addView(root);
-        TextView title=new TextView(this);title.setText("ON ShareLink Host v1.0 REBUILD");title.setTextSize(27);root.addView(title);
-        TextView desc=new TextView(this);desc.setText("S26 모바일 데이터를 R8 II / Android에 직접 공유합니다.\n외부 서버 없이 S26 자체 Wi-Fi Direct + LTE/5G relay만 사용합니다.");desc.setTextSize(16);desc.setPadding(0,14,0,20);root.addView(desc);
+        TextView title=new TextView(this);title.setText("ON ShareLink Host v1.1 STABLE");title.setTextSize(27);root.addView(title);
+        TextView desc=new TextView(this);desc.setText("S26 모바일 데이터를 R8 II / Android에 직접 공유합니다.\n외부 서버 없이 S26 자체 Wi-Fi Direct + 인터넷 relay만 사용합니다.");desc.setTextSize(16);desc.setPadding(0,14,0,20);root.addView(desc);
 
         shareSwitch=new Switch(this);shareSwitch.setText("공유망 Wi-Fi ON / OFF");shareSwitch.setTextSize(19);root.addView(shareSwitch);
         TextView ssid=new TextView(this);ssid.setText("공유망 이름\n"+ShareHostService.GROUP_NAME);ssid.setTextSize(17);ssid.setPadding(0,20,0,12);root.addView(ssid);
@@ -39,7 +39,9 @@ public class MainActivity extends Activity {
         wifiInfo=new TextView(this);wifiInfo.setTextSize(17);wifiInfo.setPadding(0,18,0,8);root.addView(wifiInfo);
         status=new TextView(this);status.setTextSize(17);status.setPadding(0,8,0,18);root.addView(status);
         TextView clientTitle=new TextView(this);clientTitle.setText("실제 접속 기기");clientTitle.setTextSize(20);root.addView(clientTitle);
-        clientsView=new TextView(this);clientsView.setTextSize(16);clientsView.setPadding(0,8,0,18);root.addView(clientsView);
+        clientsView=new TextView(this);clientsView.setTextSize(16);clientsView.setPadding(0,8,0,12);root.addView(clientsView);
+        TextView trafficTitle=new TextView(this);trafficTitle.setText("접속 IP / 데이터 사용량");trafficTitle.setTextSize(20);trafficTitle.setPadding(0,6,0,0);root.addView(trafficTitle);
+        trafficView=new TextView(this);trafficView.setTextSize(16);trafficView.setPadding(0,8,0,18);root.addView(trafficView);
 
         Button refresh=new Button(this);refresh.setText("상태 새로고침");root.addView(refresh);
         Button logs=new Button(this);logs.setText("S26 Host 진단 로그 복사");root.addView(logs);
@@ -61,10 +63,11 @@ public class MainActivity extends Activity {
     }
 
     private void refreshInfo(){
-        SharedPreferences p=getSharedPreferences("sharelink",0);boolean en=p.getBoolean("enabled",false);int n=p.getInt("client_count",0);String list=p.getString("client_list","");
+        SharedPreferences p=getSharedPreferences("sharelink",0);boolean en=p.getBoolean("enabled",false);int n=p.getInt("client_count",0);String list=p.getString("client_list","");String traffic=p.getString("traffic_list","");
         bindingSwitch=true;shareSwitch.setChecked(en);bindingSwitch=false;
         wifiInfo.setText("공유망: "+(en?"ON":"OFF")+"\nSSID: "+ShareHostService.GROUP_NAME+"\n비밀번호: "+Pairing.code(this)+"\n접속 기기: "+n+"대");
         clientsView.setText(n==0?"접속한 기기 없음":(list==null||list.isEmpty()?n+"대 접속중":list));
+        trafficView.setText(traffic==null||traffic.isEmpty()?"아직 ShareLink 데이터 사용 없음":traffic);
         if(status.getText()==null||status.getText().length()==0)status.setText(en?"공유망 준비중":"공유망 OFF");
     }
 
