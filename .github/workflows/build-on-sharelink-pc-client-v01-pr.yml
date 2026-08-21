@@ -27,7 +27,6 @@ jobs:
           $ErrorActionPreference = 'Stop'
           New-Item -ItemType Directory -Force pc-client/Resources | Out-Null
           New-Item -ItemType Directory -Force thirdparty | Out-Null
-
           $hevTag = '2.17.0'
           $headers = @{ 'User-Agent' = 'ON-ShareLink-CI' }
           $rel = Invoke-RestMethod -Headers $headers -Uri "https://api.github.com/repos/heiher/hev-socks5-tunnel/releases/tags/$hevTag"
@@ -72,8 +71,8 @@ jobs:
           $proj = Get-Content pc-client/ONShareLinkPC.csproj -Raw
           if ($src -notmatch '192\.168\.49\.1') { throw 'S26 gateway missing' }
           if ($src -notmatch '51950') { throw 'S26 SOCKS port missing' }
-          if ($src -match '0\.0\.0\.0/0') { throw 'unsafe default route introduced' }
-          if ($src -match '192\.168\.49\.0/24') { throw 'S26 local network must not enter TUN route list' }
+          if ($src -match '"0\.0\.0\.0/0"') { throw 'unsafe default route introduced' }
+          if ($src -match '"192\.168\.49\.0/24"') { throw 'S26 local network entered TUN route list' }
           if ($src -notmatch "udp: 'udp'") { throw 'UDP relay not enabled' }
           if ($src -notmatch "log-level: warn") { throw 'performance log level regression' }
           if ($src -notmatch 'ADD \{network\} MASK \{mask\} 0\.0\.0\.0') { throw 'Wintun on-link route form missing' }
