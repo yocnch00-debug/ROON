@@ -28,9 +28,6 @@ public final class Socks5Server implements Closeable {
     public synchronized void start() throws IOException {
         if(isRunning())return;
         server=new ServerSocket();server.setReuseAddress(true);
-        // Listen on all local interfaces so a short Wi-Fi Direct address/interface
-        // transition cannot silently remove the 51950 listener. Authentication is
-        // still mandatory; the advertised UDP relay stays on the P2P group address.
         server.bind(new InetSocketAddress(port));
         running=true;emit("SOCKS_LISTEN 0.0.0.0:"+port+" p2p="+bindAddress.getHostAddress());pool.execute(this::acceptLoop);
     }
@@ -64,37 +61,80 @@ public final class Socks5Server implements Closeable {
 
     private void handleConnect(Socket client,OutputStream out,Target t) throws Exception {
         Network n=network.get();
-        if(n==null){reply(out,3,InetAddress.getByName("0.0.0.0"),0);emit("SOCKS_ERROR cellular_unavailable target="+t);return;}
-        InetAddress target=resolveTarget(n,t);Socket remote=n.getSocketFactory().createSocket();
+        InetAddress target=resolveTarget(n,t);
+        Socket remote=null;
         try{
-            remote.setTcpNoDelay(true);remote.connect(new InetSocketAddress(target,t.port),10000);client.setSoTimeout(0);remote.setSoTimeout(0);
+            remote=openOutboundTcp(n,target,t.port);
+            client.setSoTimeout(0);remote.setSoTimeout(0);
             InetSocketAddress local=(InetSocketAddress)remote.getLocalSocketAddress();InetAddress la=local.getAddress()==null?InetAddress.getByName("0.0.0.0"):local.getAddress();reply(out,0,la,local.getPort());
-            AtomicBoolean once=new AtomicBoolean();Runnable close=()->{if(once.compareAndSet(false,true)){try{client.close();}catch(Exception ignored){}try{remote.close();}catch(Exception ignored){}}};
-            pool.execute(()->pump(client,remote,close));pump(remote,client,close);
-        }catch(Exception e){try{reply(out,5,InetAddress.getByName("0.0.0.0"),0);}catch(Exception ignored){}try{remote.close();}catch(Exception ignored){}emit("SOCKS_ERROR connect target="+t+" "+safe(e));}
+            Socket finalRemote=remote;AtomicBoolean once=new AtomicBoolean();Runnable close=()->{if(once.compareAndSet(false,true)){try{client.close();}catch(Exception ignored){}try{finalRemote.close();}catch(Exception ignored){}}};
+            pool.execute(()->pump(client,finalRemote,close));pump(finalRemote,client,close);
+        }catch(Exception e){
+            try{reply(out,5,InetAddress.getByName("0.0.0.0"),0);}catch(Exception ignored){}
+            try{if(remote!=null)remote.close();}catch(Exception ignored){}
+            emit("SOCKS_ERROR connect target="+t+" "+safe(e));
+        }
     }
 
-    private InetAddress resolveTarget(Network n,Target t)throws Exception{if(t.address!=null)return t.address;InetAddress[] aa=n.getAllByName(t.host);if(aa==null||aa.length==0)throw new UnknownHostException(t.host);return aa[0];}
+    private Socket openOutboundTcp(Network n,InetAddress target,int port)throws Exception{
+        if(n!=null){
+            Socket forced=null;
+            try{
+                forced=n.getSocketFactory().createSocket();forced.setTcpNoDelay(true);forced.connect(new InetSocketAddress(target,port),10000);
+                emit("OUTBOUND_CELLULAR_BIND_OK target="+target.getHostAddress()+":"+port+" local="+forced.getLocalSocketAddress());return forced;
+            }catch(Exception e){
+                try{if(forced!=null)forced.close();}catch(Exception ignored){}
+                emit("OUTBOUND_CELLULAR_BIND_BLOCKED "+safe(e)+" -> default-route fallback");
+            }
+        }else emit("OUTBOUND_CELLULAR_OBJECT_MISSING -> default-route fallback");
+
+        Socket fallback=new Socket();fallback.setTcpNoDelay(true);fallback.connect(new InetSocketAddress(target,port),10000);
+        emit("OUTBOUND_DEFAULT_ROUTE_OK target="+target.getHostAddress()+":"+port+" local="+fallback.getLocalSocketAddress());return fallback;
+    }
+
+    private InetAddress resolveTarget(Network n,Target t)throws Exception{
+        if(t.address!=null)return t.address;
+        if(n!=null){
+            try{InetAddress[] aa=n.getAllByName(t.host);if(aa!=null&&aa.length>0)return aa[0];}
+            catch(Exception e){emit("DNS_CELLULAR_BIND_BLOCKED host="+t.host+" "+safe(e)+" -> default resolver fallback");}
+        }
+        InetAddress[] aa=InetAddress.getAllByName(t.host);if(aa==null||aa.length==0)throw new UnknownHostException(t.host);return aa[0];
+    }
+
     private void pump(Socket from,Socket to,Runnable close){byte[] b=new byte[32768];try{InputStream in=from.getInputStream();OutputStream out=to.getOutputStream();for(int r;(r=in.read(b))>=0;){if(r>0){out.write(b,0,r);out.flush();}}}catch(Exception ignored){}finally{close.run();}}
 
     private void handleUdpAssociate(Socket control,OutputStream controlOut) throws Exception {
-        Network n=network.get();if(n==null){reply(controlOut,3,InetAddress.getByName("0.0.0.0"),0);emit("SOCKS_ERROR udp_cellular_unavailable");return;}
-        DatagramSocket relay=new DatagramSocket(new InetSocketAddress(bindAddress,0));DatagramSocket outbound=new DatagramSocket();n.bindSocket(outbound);relay.setSoTimeout(1000);outbound.setSoTimeout(1000);
+        Network n=network.get();
+        DatagramSocket relay=new DatagramSocket(new InetSocketAddress(bindAddress,0));DatagramSocket outbound=openOutboundUdp(n);relay.setSoTimeout(1000);outbound.setSoTimeout(1000);
         AtomicReference<SocketAddress> clientEp=new AtomicReference<>();AtomicBoolean alive=new AtomicBoolean(true);reply(controlOut,0,bindAddress,relay.getLocalPort());
         pool.execute(()->{byte[] buf=new byte[65535];while(alive.get()){try{DatagramPacket p=new DatagramPacket(buf,buf.length);relay.receive(p);if(!p.getAddress().equals(control.getInetAddress()))continue;UdpFrame f=parseUdp(p.getData(),p.getOffset(),p.getLength(),n);if(f==null)continue;clientEp.set(p.getSocketAddress());outbound.send(new DatagramPacket(f.data,f.data.length,f.target));}catch(SocketTimeoutException ignored){}catch(Exception e){if(alive.get())emit("SOCKS_ERROR udp_in "+safe(e));break;}}});
         pool.execute(()->{byte[] buf=new byte[65535];while(alive.get()){try{DatagramPacket p=new DatagramPacket(buf,buf.length);outbound.receive(p);SocketAddress ce=clientEp.get();if(ce==null)continue;byte[] frame=wrapUdp(p.getAddress(),p.getPort(),Arrays.copyOfRange(p.getData(),p.getOffset(),p.getOffset()+p.getLength()));relay.send(new DatagramPacket(frame,frame.length,ce));}catch(SocketTimeoutException ignored){}catch(Exception e){if(alive.get())emit("SOCKS_ERROR udp_out "+safe(e));break;}}});
         try{while(control.getInputStream().read()!=-1){}}catch(Exception ignored){}finally{alive.set(false);relay.close();outbound.close();}
     }
 
-    private static Target readTarget(InputStream in,int atyp)throws Exception{
+    private DatagramSocket openOutboundUdp(Network n)throws Exception{
+        DatagramSocket d=new DatagramSocket();
+        if(n!=null){
+            try{n.bindSocket(d);emit("OUTBOUND_UDP_CELLULAR_BIND_OK");return d;}
+            catch(Exception e){emit("OUTBOUND_UDP_CELLULAR_BIND_BLOCKED "+safe(e)+" -> default-route fallback");try{d.close();}catch(Exception ignored){}d=new DatagramSocket();}
+        }else emit("OUTBOUND_UDP_CELLULAR_OBJECT_MISSING -> default-route fallback");
+        return d;
+    }
+
+    private Target readTarget(InputStream in,int atyp)throws Exception{
         InetAddress a=null;String host=null;if(atyp==1)a=InetAddress.getByAddress(readN(in,4));else if(atyp==4)a=InetAddress.getByAddress(readN(in,16));else if(atyp==3){int l=readU8(in);host=new String(readN(in,l),StandardCharsets.UTF_8);}else throw new IOException("ATYP="+atyp);
         int p=(readU8(in)<<8)|readU8(in);return new Target(a,host,p);
     }
 
-    private static UdpFrame parseUdp(byte[] b,int off,int len,Network n)throws Exception{
+    private UdpFrame parseUdp(byte[] b,int off,int len,Network n)throws Exception{
         if(len<4||b[off]!=0||b[off+1]!=0||b[off+2]!=0)return null;int pos=off+3,at=b[pos++]&255;InetAddress a;
-        if(at==1){if(pos+6>off+len)return null;a=InetAddress.getByAddress(Arrays.copyOfRange(b,pos,pos+4));pos+=4;}else if(at==4){if(pos+18>off+len)return null;a=InetAddress.getByAddress(Arrays.copyOfRange(b,pos,pos+16));pos+=16;}else if(at==3){int l=b[pos++]&255;if(pos+l+2>off+len)return null;String h=new String(b,pos,l,StandardCharsets.UTF_8);pos+=l;InetAddress[] aa=n.getAllByName(h);if(aa.length==0)return null;a=aa[0];}else return null;
+        if(at==1){if(pos+6>off+len)return null;a=InetAddress.getByAddress(Arrays.copyOfRange(b,pos,pos+4));pos+=4;}else if(at==4){if(pos+18>off+len)return null;a=InetAddress.getByAddress(Arrays.copyOfRange(b,pos,pos+16));pos+=16;}else if(at==3){int l=b[pos++]&255;if(pos+l+2>off+len)return null;String h=new String(b,pos,l,StandardCharsets.UTF_8);pos+=l;a=resolveHostForUdp(n,h);}else return null;
         int p=((b[pos++]&255)<<8)|(b[pos++]&255);byte[] data=Arrays.copyOfRange(b,pos,off+len);return new UdpFrame(new InetSocketAddress(a,p),data);
+    }
+
+    private InetAddress resolveHostForUdp(Network n,String h)throws Exception{
+        if(n!=null){try{InetAddress[] aa=n.getAllByName(h);if(aa!=null&&aa.length>0)return aa[0];}catch(Exception e){emit("DNS_UDP_CELLULAR_BIND_BLOCKED host="+h+" "+safe(e)+" -> default resolver fallback");}}
+        InetAddress[] aa=InetAddress.getAllByName(h);if(aa==null||aa.length==0)throw new UnknownHostException(h);return aa[0];
     }
 
     private static byte[] wrapUdp(InetAddress a,int port,byte[] data)throws IOException{ByteArrayOutputStream o=new ByteArrayOutputStream();o.write(0);o.write(0);o.write(0);byte[] ab=a.getAddress();o.write(ab.length==4?1:4);o.write(ab);o.write((port>>>8)&255);o.write(port&255);o.write(data);return o.toByteArray();}
