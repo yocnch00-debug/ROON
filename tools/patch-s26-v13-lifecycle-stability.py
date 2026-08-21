@@ -31,6 +31,16 @@ if old not in s:
     raise SystemExit('TunnelService stop anchor not found')
 s = s.replace(old, new, 1)
 
+# Legacy GatewayBridge.java is still present in the source tree and calls TunnelService.publish().
+# Keep that status-only compatibility method so the complete source compiles. It only sends the
+# same package-scoped status broadcast used by AlwaysGatewayService; it does not touch VPN/RAAT IO.
+if 'public void publish(String kind,String state,String detail)' not in s:
+    anchor = '    void closeIO(){'
+    compat = '''    public void publish(String kind,String state,String detail){\n        Intent i=new Intent(ACTION_STATUS);\n        i.setPackage(getPackageName());\n        i.putExtra("kind",kind==null?"":kind);\n        i.putExtra("state",state==null?"":state);\n        i.putExtra("detail",detail==null?"":detail);\n        try{sendBroadcast(i);}catch(Throwable ignored){}\n    }\n'''
+    if anchor not in s:
+        raise SystemExit('TunnelService publish compatibility anchor not found')
+    s = s.replace(anchor, compat + anchor, 1)
+
 p.write_text(s, encoding='utf-8')
 
 # R8 Gateway: keep the accepted R8 socket while making a short bounded retry of the
